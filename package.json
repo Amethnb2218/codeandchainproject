@@ -1,0 +1,22 @@
+{
+  "name": "sentabakh-lite",
+  "version": "0.1.0-pre",
+  "private": true,
+  "description": "SENTABAKH LITE — Paiement Lightning → commande → livraison → versement XOF (Code & Chain Dakar 2026). Phase A : préparation pré-hackathon.",
+  "workspaces": ["shared", "server", "client"],
+  "scripts": {
+    "dev": "concurrently \"npm run dev --workspace=server\" \"npm run dev --workspace=client\"",
+    "build": "npm run build --workspace=shared && npm run build --workspace=server && npm run build --workspace=client",
+    "test": "npm run test --workspace=server && npm run test --workspace=shared",
+    "lint": "eslint . --ext .ts,.tsx || echo \"lint: config a completer\"",
+    "preflight": "npm run preflight --workspace=server",
+    "format": "prettier --write \"**/*.{ts,tsx,json,md}\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "prettier": "^3.4.2"
+  }
+}

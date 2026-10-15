@@ -1,0 +1,38 @@
+# deps
+node_modules/
+.pnp/
+
+# env & secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# db locale
+*.db
+*.sqlite
+*.sqlite3
+data/
+uploads/
+
+# build
+dist/
+build/
+.next/
+.vite/
+coverage/
+
+# logs
+logs/
+*.log
+npm-debug.log*
+
+# ide
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# sensitive exports
+preflight-report.json
