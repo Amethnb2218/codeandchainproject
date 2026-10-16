@@ -1,66 +1,122 @@
 # SENTABAKH LITE — Code & Chain Dakar 2026
 
-> Paiement Bitcoin Lightning → commande commerciale → preuve de livraison → versement en monnaie locale (XOF). Integre Bitnob (Lightning, Trading, Payouts).
+> Paiement Bitcoin Lightning → commande commerciale → preuve de livraison → versement en monnaie locale (XOF). Intègre Bitnob (Lightning, Trading, Payouts).
 
-**Evenement :** Code & Chain Dakar 2026, 17–18 octobre 2026.  
-**Statut au 15 octobre 2026 (veille) :** Phase A — preparation pre-hackathon terminee. Aucune fonctionnalite metier finale n'est presentee comme realisee pendant le hackathon (respect du reglement). Le MVP complet sera construit a partir de zero pendant le hackathon.
+**Événement :** Code & Chain Dakar 2026, 17–18 octobre 2026.  
+**Statut au 16 octobre 2026 :** Prototype complet opérationnel en local. Phase A (veille) + prototype hackathon réalisés. Mode **DEMO** par défaut (aucun fonds réel) ; mode **sandbox réel** activable si `BITNOB_CLIENT_ID/SECRET` fournis jour J.
 
-## Fonctionnalites (Phase A, pre-hackathon)
-- Monorepo `shared` / `server` / `client` operationnel.
-- Auth Bitnob HMAC-SHA256 + webhook HMAC-SHA512 + dedup.
-- Client Bitnob centralise (lecture sans mouvement de fonds verifiable).
-- Schema SQLite + machine a etats + validation Zod + unites sats/BTC.
-- Endpoints `GET /health`, `GET /api/preflight`, `GET /api/orders`, `POST /api/webhooks/bitnob`.
-- Tests Vitest (transitions, unites, HMAC).
-- Frontend Vite React minimal avec badge mode (DEMO/SANDBOX/PRODUCTION) + page preflight.
+## Fonctionnalités opérationnelles
+
+**Parcours complet (DEMO) :**
+1. Création commande (montant sats, description, vendeur, bénéficiaire, mode demo/sandbox)
+2. Génération facture Lightning — DEMO `lnbc...DEMO_NO_FUNDS` clairement marquée, ou réelle via `POST /api/lightning/invoices` si Bitnob configuré
+3. Confirmation paiement — simulation DEMO ou vérification réelle `GET /api/lightning/invoices/:id`
+4. Preuve de livraison + confirmation réception (transitions gardées)
+5. Cotation payout XOF (estimation DEMO ou `POST /api/payouts/quotes` réel)
+6. Initialisation versement + finalisation (DEMO ou `POST /api/payouts/:quoteId/initialize|finalize`)
+7. Historique complet (transitions, factures, cotations, versements, preuves) persistant après redémarrage
+
+**Sécurité & robustesse :**
+- Auth Bitnob HMAC-SHA256 (`CLIENT_ID:TIMESTAMP:NONCE:BODY`, body="" pour GET, hex), webhook HMAC-SHA512 sur raw body + dedup `UNIQUE(dedup_key)` + rejet 401 si secret configuré et signature invalide
+- Machine à états 13 statuts (`created → ... → payout_completed|failed|expired|disputed`), garde `canTransition` côté serveur uniquement
+- Anti double facture / double cotation / double payout (409), Zod validation, unités sats↔BTC
+
+**Interface :** React + Vite, 100% français, responsive, badge `DÉMONSTRATION — AUCUN FONDS RÉEL` / `SANDBOX` en haut, pages `/` (liste), `/new` (création), `/orders/:id` (détail + actions), `/health` (preflight). Tous les boutons font une vraie requête ou sont désactivés avec raison.
+
+**Tests :** 21 tests (sanity 9 + extended 12) : transitions interdites, sats/BTC, Zod, HMAC SHA256/SHA512, webhook invalide/répété, persistance, demo vs réel, secrets hors frontend.
 
 ## Architecture
-Voir `docs/ARCHITECTURE.md`. Stack : React TS Vite + Express TS + SQLite WAL + Vitest + Zod. Base Bitnob `https://api.bitnob.com`.
 
-## Prerequis
-Node >=20 (teste v24.22.0), npm 12.2.0, Git 2.55.0.
+- **Frontend** `client/` : React 18 + TypeScript + Vite 6 + React Router, `VITE_API_URL`, `VITE_APP_MODE`
+- **Backend** `server/` : Express + Helmet/CORS/Morgan + `node:sqlite` (natif Node 24, WAL) + Zod + `tsx`
+- **Shared** `shared/` : états, schemas, utilitaires (`satsToBtc`, `canTransition`)
+- **Bitnob** `server/src/bitnob/` : `signer.ts` (HMAC), `client.ts` (fetch centralisé, sanitize logs, erreurs RFC7807)
+- **DB** `server/src/db/` : `schema.ts` (8 tables + 3 index), `helpers.ts` (transitions, `getOrderFull`), `node:sqlite`
+- **Routes** `server/src/routes/` : `orders.ts` (CRUD + invoice + demo + proof + payout), `bitnob.ts` (balances, countries, prices — lecture seule)
+- Base Bitnob : `https://api.bitnob.com` (même host sandbox/prod, secret détermine l'env)
+
+## Prérequis
+
+Node >=20 (testé v24.22.0), npm 12.2.0 (`npm.cmd` sous PowerShell), Git 2.55.0.
 
 ## Installation
+
 ```powershell
-# reconstruire le PATH si Git non reconnu
+# reconstruire le PATH si Git non reconnu (mécanisme validé)
 $machinePath=[Environment]::GetEnvironmentVariable("Path","Machine"); $userPath=[Environment]::GetEnvironmentVariable("Path","User"); $entries=@($machinePath -split ';')+@($userPath -split ';')+@($env:Path -split ';'); $seen=[System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase); $env:Path=(($entries|ForEach-Object{$e=$_.Trim();if($e -and $seen.Add($e)){$e}})-join ';')
 
-npm install
-cp .env.example .env   # puis renseigner BITNOB_CLIENT_ID/SECRET si fournis
+npm.cmd install
+# optionnel : copier .env.example -> .env et renseigner BITNOB_* si fournis
+Copy-Item .env.example .env
+# éditer .env : BITNOB_CLIENT_ID, BITNOB_CLIENT_SECRET, BITNOB_WEBHOOK_SECRET, BITNOB_CUSTOMER_ID
 ```
 
 ## Configuration (.env)
-Voir `.env.example`. Cles Bitnob uniquement cote `server` (`BITNOB_CLIENT_ID`, `BITNOB_CLIENT_SECRET`, `BITNOB_WEBHOOK_SECRET`). Frontend : `VITE_API_URL`, `VITE_APP_MODE`.
+
+Voir `.env.example`. Clés Bitnob **uniquement côté serveur** (`BITNOB_CLIENT_ID`, `BITNOB_CLIENT_SECRET`, `BITNOB_WEBHOOK_SECRET`, `BITNOB_CUSTOMER_ID`). Frontend : `VITE_API_URL=http://localhost:4000`, `VITE_APP_MODE=sandbox|demo`. `APP_MODE=sandbox` par défaut. Jamais de secret dans `client/`.
 
 ## Commandes
+
 ```powershell
-npm run preflight --workspace=server   # verifs lecture seule, sans mouvement de fonds
-npm run dev                            # client :5173 + server :4000
-npm test                               # server + shared
-npm run build                          # build shared + server + client
-npm run preflight                      # proxy racine -> server
+npm.cmd run preflight --workspace=server  # sans fonds : whoami/balances/countries/prices si creds, sinon message demo
+npm.cmd run dev --workspace=server        # backend :4000 (tsx watch)
+npm.cmd run dev --workspace=client        # frontend :5173 (vite)
+npm.cmd run dev                           # les deux (concurrently)
+npm.cmd test                              # server (21) + shared (--passWithNoTests)
+npm.cmd run build --workspace=shared      # tsc shared
+npm.cmd run build --workspace=server      # tsc server
+npm.cmd run build --workspace=client      # vite build (front dist)
+npm.cmd run build                         # tout
 ```
 
-## Modes
-- `sandbox` : appels reels en test (si credentials valides), jamais de fonds reels.
-- `demo` : simulation explicite avec bandeau `DEMONSTRATION — AUCUN FONDS REEL`, donnees marquees simulees.
-- `production` : reel (hors hackathon, credentials prod).
+## Tests & build (résultats réels 16 oct)
 
-## Validation Bitnob
-`npm run preflight --workspace=server` teste `GET /api/whoami`, `/api/balances`, `/api/payouts/supported-countries`, `/api/trading/prices` — aucune ecriture, aucun mouvement de fonds.
+- `npx vitest run` (server) : **21 passed** (sanity 9 + extended 12)
+- `tsc --noEmit` server : 0 erreur
+- `tsc` shared + server : 0 erreur
+- `vite build` client : 31 modules, 179 Ko (gz 58 Ko)
 
-## Limitations connues (Phase A)
-- Pas de credentials Bitnob configures → preflight en mode demo.
-- MVP metier (factures, trading, payouts, preuves, dashboard) a construire pendant le hackathon.
-- Docs `docs.bitnob.co` parfois indisponible, fallback `bitnob.dev` utilise.
+## Modes démonstration et sandbox
 
-## Securite
-- Secrets jamais exposes au frontend, jamais commites.
-- Webhook verifie sur raw body.
-- `.env`, `*.db`, `uploads/`, `logs/` ignores par Git.
+- **DEMO** (par défaut sans `BITNOB_*`) : toutes les opérations financières sont simulées, bolt11 `...DEMO_NO_FUNDS`, statuts `*_demo`, bandeau orange, montants estimés clairement étiquetés. Aucun appel Bitnob sortant.
+- **Sandbox réel** (`BITNOB_*` renseignés + `APP_MODE=sandbox`) : `POST /api/lightning/invoices`, `GET /api/lightning/invoices/:id`, `POST /api/payouts/quotes`, `POST /api/payouts/:quoteId/initialize|finalize` réellement appelés avec HMAC. Les écritures échouent proprement (502) si quota/corridor indisponible, sans masquer l'erreur.
+- Toute facture/confirmation/cotation/versement simulé reste identifiable en DB (`demo` flag), historique et logs.
 
-## Deploiement
-Prevu en Phase B (Vercel/Render selon acces jour J). Non pretendu deploye avant verification URL.
+## Procédure de validation Bitnob
+
+Sans creds : `npm.cmd run preflight --workspace=server` affiche `Bitnob configured: false → Mode DEMO autorisé`.  
+Avec creds sandbox : le même preflight teste `GET /api/whoami`, `/api/balances`, `/api/payouts/supported-countries`, `/api/trading/prices` — **lecture seule, aucun mouvement de fonds**. Les résultats sont loggés sans secrets (headers sanitizés). Les webhooks `POST /api/webhooks/bitnob` sont vérifiables avec `x-bitnob-signature`.
+
+Sources : https://bitnob.dev — https://bitnob.dev/llms.txt — https://bitnob.dev/api-reference/lightning|trading|payouts — OpenAPI https://bitnob.dev/api-collections/swagger/bitnob-api-v2.openapi.json
+
+## Limitations réelles (16 oct)
+
+- Aucun `BITNOB_CLIENT_ID/SECRET` fourni → parcours réel non vérifié en live (DEMO seul testé bout en bout)
+- Trading BTC→USDT non branché en automatique (conversion marquée `funded` en DEMO, `conversion_pending` en réel — quote trading à ajouter si pair disponible)
+- `BITNOB_CUSTOMER_ID` requis pour `POST /api/lightning/invoices` (à renseigner dans `.env` si fourni par l'orga)
+- Pas de déploiement distant (local uniquement)
+
+## Sécurité
+
+- Secrets jamais exposés au frontend (test `Secrets jamais dans frontend` vert), jamais committés, `.env` ignoré
+- Webhook : `rawBody` conservé via `express.json({verify: rawBodySaver})`, HMAC-SHA512 constant-time, dedup UNIQUE, 401 si secret configuré et signature fausse
+- `.gitignore` : `node_modules/`, `.env`, `data/`, `*.db`, `dist/`, `logs/`, `uploads/`, `preflight-report.json`
+- Pas de `Reference` utilisée comme idempotence aveugle — vérification état avant re-soumission
+
+## Déploiement
+
+Prévu Vercel (frontend) + Render/Fly (backend) ou Docker. `server/dist` (tsc) + `client/dist` (vite) prêts. Non prétendu déployé avant vérification URL.
+
+## Scénario de démonstration (3 min, hors ligne possible)
+
+1. **Créer** : `/new` → 50000 sats, "Riz 25kg", demo coché → Créer
+2. **Payer** : Générer facture → bolt11 DEMO affiché → Simuler paiement confirmé
+3. **Livrer** : Déposer preuve → Confirmer réception
+4. **Verser** : Cotation XOF (30M XOF estimé DEMO) → Init versement (WAVE, 771234567) → Simuler versement terminé
+5. **Historique** : 10 transitions `created → payout_completed`, payouts `completed_demo`, tout marqué DEMO
+
+Commandes API équivalentes (PowerShell) : voir `docs/PREPARATION.md` ou rejouer le parcours via `Invoke-RestMethod` sur `http://localhost:4000`.
 
 ## Licence
-Prive — hackathon Code & Chain Dakar 2026.
+
+Privé — Code & Chain Dakar 2026.

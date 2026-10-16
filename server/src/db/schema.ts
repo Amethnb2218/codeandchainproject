@@ -1,4 +1,4 @@
-// SENTABAKH LITE — schema SQLite (Phase A : structure minimale, migrations en Phase B MVP)
+// SENTABAKH LITE — schema SQLite (node:sqlite)
 export const SCHEMA_SQL = `
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;
@@ -81,6 +81,15 @@ CREATE TABLE IF NOT EXISTS payouts (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS delivery_proofs (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  note TEXT NOT NULL,
+  image_url TEXT,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS webhook_events (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
@@ -105,4 +114,5 @@ CREATE TABLE IF NOT EXISTS order_transitions (
 CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_invoices_order ON lightning_invoices(order_id);
 CREATE INDEX IF NOT EXISTS idx_payouts_order ON payouts(order_id);
+CREATE INDEX IF NOT EXISTS idx_proofs_order ON delivery_proofs(order_id);
 `;
