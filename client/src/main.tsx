@@ -1,9 +1,10 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Routes, Route, Link, useParams, useNavigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Link, NavLink, useParams, useNavigate } from "react-router-dom";
 import "./styles.css";
 import { api, satsToBtc } from "./lib/api";
 
+/* ---------- constants ---------- */
 const STATUS_LABEL: Record<string, string> = {
   created: "Créée",
   awaiting_payment: "En attente de paiement",
@@ -20,299 +21,707 @@ const STATUS_LABEL: Record<string, string> = {
   disputed: "Litige",
 };
 
-function TopBadge() {
-  const mode = import.meta.env.VITE_APP_MODE ?? "sandbox";
+const STATUS_TONE: Record<string, string> = {
+  created: "badge",
+  awaiting_payment: "badge badge-warn",
+  payment_confirmed: "badge badge-ok",
+  conversion_pending: "badge badge-warn",
+  funded: "badge badge-ok",
+  delivery_declared: "badge badge-warn",
+  delivery_confirmed: "badge badge-ok",
+  payout_pending: "badge badge-warn",
+  payout_processing: "badge badge-warn",
+  payout_completed: "badge badge-ok",
+  failed: "badge",
+  expired: "badge",
+  disputed: "badge",
+};
+
+function formatDateFR(iso: string) {
+  try { return new Date(iso).toLocaleString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }); } catch { return iso; }
+}
+
+/* ---------- icons ---------- */
+function IcoBolt(p:{className?:string}){return <svg className={p.className??"icon"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M13 2L4 13h6l-1 9 10-13h-6l0-6z"/></svg>}
+function IcoTruck(p:{className?:string}){return <svg className={p.className??"icon"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M14 18V6a1 1 0 0 0-1-1H3a1 1 0 0 0-1 1v11a1 1 0 0 0 1 1h2"/><path d="M15 18H9"/><path d="M19 18h2a1 1 0 0 0 1-1v-5a1 1 0 0 0-.6-.9l-3-1.5A1 1 0 0 0 17 9h-2"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></svg>}
+function IcoWallet(p:{className?:string}){return <svg className={p.className??"icon"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="2" y="5" width="20" height="14" rx="2"/><path d="M16 14a2 2 0 0 0 2-2v-0a2 2 0 0 0-2-2h-2"/><path d="M2 10h20"/></svg>}
+function IcoCheck(p:{className?:string}){return <svg className={p.className??"icon"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><path d="M5 13l4 4L19 7"/></svg>}
+function IcoCopy(p:{className?:string}){return <svg className={p.className??"icon"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>}
+function IcoPlus(p:{className?:string}){return <svg className={p.className??"icon"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M12 5v14M5 12h14"/></svg>}
+function IcoSearch(p:{className?:string}){return <svg className={p.className??"icon"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><circle cx="11" cy="11" r="7"/><path d="M20 20L16.5 16.5"/></svg>}
+function IcoShield(p:{className?:string}){return <svg className={p.className??"icon"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3l7 3v5c0 4-2.8 7-7 8-4.2-1-7-4-7-8V6l7-3z"/><path d="M9 12l2 2 4-4"/></svg>}
+function IcoArrow(p:{className?:string}){return <svg className={p.className??"icon"} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>}
+
+/* ---------- wordmark ---------- */
+function SymbolMark(){
+  return (
+    <div className="wordmark-mark" aria-hidden>
+      <svg viewBox="0 0 24 24" width="20" height="20" fill="none">
+        <path d="M6.5 16.5L12 5l5.5 11.5-5.5 2.2L6.5 16.5z" fill="currentColor" opacity=".96"/>
+        <path d="M9.2 14.3l2.8-6 2.8 6-2.8 1.1-2.8-1.1z" fill="var(--paper)" opacity=".95"/>
+        <path d="M12 8.2v7.2" stroke="var(--forest)" strokeWidth="1.1" opacity=".35"/>
+      </svg>
+    </div>
+  );
+}
+
+/* ---------- Top band ---------- */
+function TopBand(){
+  const mode = (import.meta.env.VITE_APP_MODE as string | undefined) ?? "sandbox";
   const isDemo = mode === "demo";
-  const label = isDemo ? "DÉMONSTRATION — AUCUN FONDS RÉEL" : mode === "production" ? "PRODUCTION" : "SANDBOX — Bitnob test (aucun fonds réel sans validation)";
-  const bg = isDemo ? "#b45309" : mode === "production" ? "#dc2626" : "#0e7490";
-  return <div style={{ background: bg, color: "#fff", textAlign: "center", padding: "7px 12px", fontSize: 12, fontWeight: 800, letterSpacing: 0.4 }}>{label}</div>;
+  const isProd = mode === "production";
+  const cls = isDemo ? "topband topband-demo" : isProd ? "topband topband-prod" : "topband topband-sandbox";
+  const label = isDemo ? "DÉMONSTRATION — AUCUN FONDS RÉEL" : isProd ? "PRODUCTION — FONDS RÉELS" : "SANDBOX — Bitnob test · aucun fonds réel sans validation";
+  return <div className={cls}><IcoShield /> <span>{label}</span> {!isDemo && !isProd && <span style={{opacity:.9}}>· factures & versements simulés marqués DEMO</span>}</div>;
 }
-function Nav() {
+
+function SiteHeader(){
   return (
-    <div className="container" style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}>
-      <Link to="/" style={{ fontWeight: 900, letterSpacing: 0.5 }}>SENTABAKH LITE</Link>
-      <div style={{ display: "flex", gap: 10 }}>
-        <Link className="pill" to="/">Commandes</Link>
-        <Link className="pill" to="/new">Nouvelle commande</Link>
-        <Link className="pill" to="/health">Santé</Link>
+    <header className="site-header">
+      <div className="site-header-inner">
+        <Link to="/" className="wordmark" aria-label="SENTABAKH LITE — accueil">
+          <SymbolMark />
+          <div className="wordmark-wordmark">
+            <div className="wordmark-title">SENTABAKH LITE</div>
+            <div className="wordmark-sub">Lightning → livraison → XOF · Dakar 2026</div>
+          </div>
+        </Link>
+        <nav className="nav" aria-label="Navigation principale">
+          <NavLink to="/" end>Commandes</NavLink>
+          <NavLink to="/new" className="nav-cta">Nouvelle commande</NavLink>
+          <NavLink to="/health">Santé</NavLink>
+        </nav>
       </div>
-    </div>
+    </header>
   );
 }
 
-function Home() {
+function Footer(){
+  return (
+    <footer className="site-footer">
+      <span>© 2026 Sentabakh Lite · Code & Chain Dakar — Produit de démonstration. Aucun fonds réel sans clés Bitnob.</span>
+      <span className="mono" style={{opacity:.7}}>api.bitnob.com · node:sqlite · HMAC-SHA256/512</span>
+    </footer>
+  );
+}
+
+/* ---------- Home ---------- */
+function Home(){
   const [orders, setOrders] = React.useState<Array<Record<string, unknown>>>([]);
-  const [err, setErr] = React.useState<string | null>(null);
-  const load = React.useCallback(async () => {
-    try {
-      const j = await api<{ data: Array<Record<string, unknown>> }>("/api/orders");
-      setOrders(j.data);
-    } catch (e) {
-      setErr((e as Error).message);
+  const [q, setQ] = React.useState("");
+  const [statusF, setStatusF] = React.useState("all");
+  const [modeF, setModeF] = React.useState("all");
+  const [err, setErr] = React.useState<string|null>(null);
+  const [loading, setLoading] = React.useState(true);
+
+  const load = React.useCallback(async ()=>{
+    setLoading(true); setErr(null);
+    try{ const j = await api<{data:Array<Record<string,unknown>>}>("/api/orders"); setOrders(j.data);}catch(e){ setErr((e as Error).message);} finally{ setLoading(false);}
+  },[]);
+  React.useEffect(()=>{ load();},[load]);
+
+  const filtered = orders.filter(o=>{
+    if(statusF!=="all" && o.status!==statusF) return false;
+    if(modeF==="demo" && (o.demo_mode as number)!==1) return false;
+    if(modeF==="sandbox" && (o.demo_mode as number)===1) return false;
+    if(q){
+      const hay = `${o.id} ${o.description} ${o.beneficiary_name} ${o.seller_label}`.toLowerCase();
+      if(!hay.includes(q.toLowerCase())) return false;
     }
-  }, []);
-  React.useEffect(() => {
-    load();
-  }, [load]);
-  return (
-    <div className="container grid">
-      <div className="card">
-        <h2 style={{ margin: "0 0 6px" }}>Commandes</h2>
-        <p className="muted small">Flux : paiement Lightning → financement → livraison → versement XOF. Les lignes marquées DEMO sont simulées.</p>
-        {err && <p style={{ color: "crimson" }}>{err}</p>}
-        <table className="table">
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Description</th>
-              <th>Montant</th>
-              <th>Statut</th>
-              <th>Mode</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {orders.map((o) => (
-              <tr key={o.id as string}>
-                <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(o.id as string).slice(0, 10)}…</td>
-                <td>{o.description as string}</td>
-                <td>{(o.amount_sats as number).toLocaleString("fr-FR")} sats</td>
-                <td><span className="badge">{STATUS_LABEL[o.status as string] ?? (o.status as string)}</span></td>
-                <td>{(o.demo_mode as number) ? <span className="badge badge-demo">DEMO</span> : <span className="badge">SANDBOX</span>}</td>
-                <td><Link className="btn" to={`/orders/${o.id}`}>Ouvrir</Link></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {orders.length === 0 && <p className="muted">Aucune commande. Créez-en une.</p>}
-      </div>
-      <div className="card small muted">Astuce démo 3 min : Nouvelle commande → Ouvrir → Générer facture (DEMO) → Confirmer paiement (DEMO) → Déposer preuve → Confirmer réception → Cotation XOF → Init versement → Confirmer versement (DEMO).</div>
-    </div>
-  );
-}
+    return true;
+  });
 
-function NewOrder() {
-  const nav = useNavigate();
-  const [form, setForm] = React.useState({ amountSats: 50000, description: "Commande riz 25kg — Dakar", sellerLabel: "Mareyeus Aliou", beneficiaryName: "Aminata Diallo", beneficiaryPhoneHint: "77XXXXXXX", demoMode: true });
-  const [err, setErr] = React.useState<string | null>(null);
-  const [loading, setLoading] = React.useState(false);
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr(null);
-    setLoading(true);
-    try {
-      const j = await api<{ id: string }>("/api/orders", { method: "POST", body: JSON.stringify({ ...form, amountSats: Number(form.amountSats) }) });
-      nav(`/orders/${j.id}`);
-    } catch (e) {
-      setErr((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  };
-  return (
-    <div className="container">
-      <div className="card" style={{ maxWidth: 640 }}>
-        <h2>Nouvelle commande</h2>
-        <form onSubmit={submit} className="grid">
-          <label>Montant (sats, 1 BTC = 100M sats)<input className="input" type="number" value={form.amountSats} onChange={(e) => setForm({ ...form, amountSats: Number(e.target.value) })} min={1000} max={100_000_000} required /></label>
-          <label>Description<input className="input" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} required /></label>
-          <label>Vendeur<input className="input" value={form.sellerLabel} onChange={(e) => setForm({ ...form, sellerLabel: e.target.value })} required /></label>
-          <label>Bénéficiaire<input className="input" value={form.beneficiaryName} onChange={(e) => setForm({ ...form, beneficiaryName: e.target.value })} required /></label>
-          <label>Téléphone (indice)<input className="input" value={form.beneficiaryPhoneHint} onChange={(e) => setForm({ ...form, beneficiaryPhoneHint: e.target.value })} placeholder="77XXXXXXX" /></label>
-          <label style={{ display: "flex", gap: 8, alignItems: "center" }}><input type="checkbox" checked={form.demoMode} onChange={(e) => setForm({ ...form, demoMode: e.target.checked })} /> Mode démonstration (recommandé sans clés Bitnob)</label>
-          {err && <p style={{ color: "crimson" }}>{err}</p>}
-          <button className="btn btn-primary" disabled={loading}>{loading ? "Création…" : "Créer la commande"}</button>
-        </form>
-      </div>
-    </div>
-  );
-}
-
-function OrderDetail() {
-  const { id } = useParams();
-  const [data, setData] = React.useState<Record<string, unknown> | null>(null);
-  const [err, setErr] = React.useState<string | null>(null);
-  const [proofNote, setProofNote] = React.useState("Colis remis au point relais — photo à l'appui (démo)");
-  const [benef, setBenef] = React.useState({ destination_type: "mobile_money" as const, country: "SN", account_name: "Aminata Diallo", account_number: "771234567", network: "WAVE" });
-  const [quoteId, setQuoteId] = React.useState<string>("");
-
-  const load = React.useCallback(async () => {
-    try {
-      const j = await api<Record<string, unknown>>(`/api/orders/${id}`);
-      setData(j);
-      const pq = (j.payoutQuotes as Array<Record<string, unknown>> | undefined)?.[0];
-      if (pq) setQuoteId(pq.id as string);
-    } catch (e) {
-      setErr((e as Error).message);
-    }
-  }, [id]);
-  React.useEffect(() => {
-    load();
-    const t = setInterval(load, 4000);
-    return () => clearInterval(t);
-  }, [load]);
-
-  if (err) return <div className="container"><p style={{ color: "crimson" }}>{err}</p><Link to="/">Retour</Link></div>;
-  if (!data) return <div className="container">Chargement…</div>;
-  const order = data.order as Record<string, unknown>;
-  const isDemo = (order.demo_mode as number) === 1;
-  const status = order.status as string;
-  const invoices = (data.invoices as Array<Record<string, unknown>>) ?? [];
-  const proofs = (data.proofs as Array<Record<string, unknown>>) ?? [];
-  const pQuotes = (data.payoutQuotes as Array<Record<string, unknown>>) ?? [];
-  const payouts = (data.payouts as Array<Record<string, unknown>>) ?? [];
-  const transitions = (data.transitions as Array<Record<string, unknown>>) ?? [];
-  const lastInvoice = invoices[0];
-
-  const call = async (path: string, body?: unknown) => {
-    setErr(null);
-    try {
-      await api(path, body ? { method: "POST", body: JSON.stringify(body) } : { method: "POST" });
-      await load();
-    } catch (e) {
-      setErr((e as Error).message);
-    }
-  };
+  const kpiTotal = orders.length;
+  const kpiDemo = orders.filter(o=>(o.demo_mode as number)===1).length;
+  const kpiPending = orders.filter(o=>String(o.status)==="awaiting_payment").length;
+  const kpiDone = orders.filter(o=>String(o.status)==="payout_completed").length;
 
   return (
-    <div className="container grid">
-      <div className="card">
-        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-          <h2 style={{ margin: 0 }}>{order.description as string}</h2>
-          <span className="badge">{STATUS_LABEL[status] ?? status}</span>
+    <div className="page">
+      <div className="hero">
+        <div>
+          <div className="eyebrow">Produit fintech · commerce de proximité au Sénégal</div>
+          <h1 className="hero-title">Encaissez en Bitcoin Lightning.<br/>Livrez. Versez en XOF.</h1>
+          <p className="hero-lead">Sentabakh Lite relie le paiement Lightning, la preuve de livraison et le versement mobile money/bancaire via Bitnob — avec un parcours démo de bout en bout, traçable et réversible, sans mélanger simulation et réel.</p>
+          <div className="hero-actions">
+            <Link to="/new" className="btn btn-coral"><IcoPlus/> Nouvelle commande</Link>
+            <Link to="/health" className="btn btn-ghost"><IcoShield/> Vérifier l’intégration</Link>
+          </div>
+          <div className="notice" style={{marginTop:12}}>
+            <strong style={{color:"var(--forest)"}}>Flux métier :</strong> paiement → financement → livraison → réception → versement. Les opérations DEMO sont orange, marquées <span className="badge badge-demo" style={{verticalAlign:"middle"}}>DEMO</span> et portent <span className="mono">…DEMO_NO_FUNDS</span>.
+          </div>
         </div>
-        <p className="muted small">ID {order.id as string} · {(order.amount_sats as number).toLocaleString("fr-FR")} sats ({satsToBtc(order.amount_sats as number)} BTC) · vendeur {order.seller_label as string} · bénéficiaire {order.beneficiary_name as string}</p>
-        {isDemo && <p className="badge badge-demo">DEMONSTRATION — AUCUN FONDS REEL — toutes les étapes ci-dessous sont simulées</p>}
-        {!isDemo && <p className="badge">SANDBOX — factures et versements réels en test (si Bitnob configuré)</p>}
+        <div className="kpi-grid">
+          <div className="kpi"><div className="kpi-lbl">Commandes</div><div className="kpi-val">{kpiTotal}</div><div className="kpi-hint">historique persistant SQLite</div></div>
+          <div className="kpi"><div className="kpi-lbl">Versements terminés</div><div className="kpi-val">{kpiDone}</div><div className="kpi-hint">DEMO ou confirmés Bitnob</div></div>
+          <div className="kpi"><div className="kpi-lbl">En attente de paiement</div><div className="kpi-val">{kpiPending}</div><div className="kpi-hint">facture à régler</div></div>
+          <div className="kpi"><div className="kpi-lbl">Opérations DEMO</div><div className="kpi-val">{kpiDemo}</div><div className="kpi-hint">simulées, traçables</div></div>
+          <div className="panel panel-pad" style={{gridColumn:"1 / -1"}}>
+            <div className="section-title"><IcoShield/> Garde-fous actifs</div>
+            <div style={{fontSize:12, color:"var(--ink-60)", lineHeight:1.6}}>Transitions vérifiées côté serveur · anti double-facture/double-versement (409) · webhook HMAC-SHA512 + déduplication · montants en sats/BTC validés · secrets jamais exposés au frontend.</div>
+          </div>
+        </div>
       </div>
 
-      <div className="grid grid-2">
-        <div className="card">
-          <h3>Paiement Lightning</h3>
-          {lastInvoice ? (
-            <div className="grid">
-              <p className="small muted">Réf {(lastInvoice.reference as string).slice(0, 12)}… · statut <b>{lastInvoice.status as string}</b> {String(lastInvoice.status).includes("demo") && <span className="badge badge-demo">DEMO</span>}</p>
-              <div style={{ background: "#f8fafc", padding: 10, borderRadius: 10, wordBreak: "break-all", fontFamily: "monospace", fontSize: 11 }}>{lastInvoice.bolt11 as string}</div>
-              <p className="small muted">Expire : {new Date(lastInvoice.expires_at as string).toLocaleString("fr-FR")}</p>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <button className="btn" onClick={() => call(`/api/orders/${id}/check-payment`)} disabled={!!String(lastInvoice.status).includes("demo")}>Vérifier paiement (réel)</button>
-                {isDemo && (
-                  <button className="btn btn-demo" onClick={() => call(`/api/orders/${id}/demo/confirm-payment`)} disabled={status !== "awaiting_payment" && status !== "created"}>
-                    Simuler paiement confirmé (DEMO)
-                  </button>
+      <div className="panel">
+        <div className="panel-pad">
+          <div style={{display:"flex", justifyContent:"space-between", gap:12, flexWrap:"wrap", alignItems:"end"}}>
+            <div>
+              <div className="section-title">Commandes <span className="mono" style={{fontWeight:500, color:"var(--ink-40)"}}>· {filtered.length} / {orders.length}</span></div>
+              <div style={{fontSize:12, color:"var(--ink-60)"}}>Recherchez par référence, description ou bénéficiaire. Filtrez par statut et mode.</div>
+            </div>
+            <Link to="/new" className="btn btn-primary btn-sm"><IcoPlus/> Créer</Link>
+          </div>
+          <div className="filters" style={{marginTop:12}}>
+            <label className="field" style={{flex:"1 1 260px"}}>
+              <span className="field-label" style={{display:"flex", gap:6, alignItems:"center"}}><IcoSearch/> Recherche</span>
+              <input className="input" placeholder="Réf, riz, Aminata…" value={q} onChange={e=>setQ(e.target.value)} aria-label="Rechercher une commande"/>
+            </label>
+            <label className="field"><span className="field-label">Statut</span>
+              <select value={statusF} onChange={e=>setStatusF(e.target.value)}>
+                <option value="all">Tous</option>
+                <option value="awaiting_payment">En attente de paiement</option>
+                <option value="funded">Financée</option>
+                <option value="delivery_declared">Livraison déclarée</option>
+                <option value="delivery_confirmed">Réception confirmée</option>
+                <option value="payout_processing">Versement en cours</option>
+                <option value="payout_completed">Versement terminé</option>
+              </select>
+            </label>
+            <label className="field"><span className="field-label">Mode</span>
+              <select value={modeF} onChange={e=>setModeF(e.target.value)}>
+                <option value="all">Tous</option>
+                <option value="demo">DEMO uniquement</option>
+                <option value="sandbox">SANDBOX uniquement</option>
+              </select>
+            </label>
+          </div>
+        </div>
+
+        {loading ? <div className="panel-pad notice">Chargement…</div> : err ? <div className="panel-pad error">{err} — <button className="btn btn-sm" onClick={load}>Réessayer</button></div> : filtered.length===0 ? (
+          <div className="panel-pad notice notice-strong" style={{display:"grid", gap:10}}>
+            <div style={{fontWeight:700, color:"var(--forest)"}}>{orders.length===0 ? "Aucune commande pour l’instant" : "Aucun résultat"}</div>
+            <div style={{fontSize:13, color:"var(--ink-60)"}}>{orders.length===0 ? "Créez votre première commande pour lancer le parcours démo de 3 minutes." : "Essayez une autre recherche ou effacez les filtres."}</div>
+            {orders.length===0 && <div><Link to="/new" className="btn btn-coral"><IcoPlus/> Nouvelle commande</Link></div>}
+          </div>
+        ) : (
+          <div className="table-wrap">
+            <table className="table">
+              <thead><tr><th>Réf</th><th>Objet</th><th>Bénéficiaire</th><th>Montant</th><th>Statut</th><th>Date</th><th>Mode</th><th></th></tr></thead>
+              <tbody>
+                {filtered.map(o=>(
+                  <tr key={o.id as string}>
+                    <td className="thin" style={{maxWidth:140}}><span className="mono truncate" title={o.id as string}>{(o.id as string).slice(0,14)}…</span></td>
+                    <td style={{minWidth:180}}><div style={{fontWeight:650, color:"var(--forest)"}}>{o.description as string}</div><div className="mono" style={{fontSize:11, color:"var(--ink-40)"}}>{o.seller_label as string}</div></td>
+                    <td>{o.beneficiary_name as string}<div className="mono" style={{fontSize:11, color:"var(--ink-40)"}}>{(o.beneficiary_phone_hint as string)??"—"}</div></td>
+                    <td className="amount">{(o.amount_sats as number).toLocaleString("fr-FR")} <span style={{fontWeight:500, color:"var(--ink-40)"}}>sats</span><div className="mono" style={{fontSize:11, color:"var(--ink-40)"}}>{satsToBtc(o.amount_sats as number)} BTC</div></td>
+                    <td><span className={STATUS_TONE[o.status as string] ?? "badge"}><span className="dot"/>{STATUS_LABEL[o.status as string] ?? (o.status as string)}</span></td>
+                    <td className="thin" style={{whiteSpace:"nowrap"}}>{formatDateFR(o.created_at as string)}</td>
+                    <td>{(o.demo_mode as number) ? <span className="badge badge-demo">DEMO</span> : <span className="badge">SANDBOX</span>}</td>
+                    <td><Link className="btn btn-sm" to={`/orders/${o.id}`}>Ouvrir <IcoArrow/></Link></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- New order ---------- */
+function NewOrder(){
+  const nav = useNavigate();
+  const [form, setForm] = React.useState({ amountSats: 50000, description: "Commande riz 25kg — Dakar", sellerLabel: "Mareyeus Aliou", beneficiaryName: "Aminata Diallo", beneficiaryPhoneHint: "771234567", demoMode: true });
+  const [err, setErr] = React.useState<string|null>(null);
+  const [fieldErr, setFieldErr] = React.useState<Record<string,string>>({});
+  const [loading, setLoading] = React.useState(false);
+
+  const validate = ()=>{
+    const e:Record<string,string>={};
+    if(!form.amountSats || form.amountSats<1000) e.amountSats="Minimum 1 000 sats";
+    if(form.amountSats>100_000_000) e.amountSats="Maximum 100 000 000 sats (1 BTC)";
+    if(form.description.trim().length<3) e.description="Description trop courte";
+    if(form.sellerLabel.trim().length<2) e.sellerLabel="Nom du vendeur requis";
+    if(form.beneficiaryName.trim().length<2) e.beneficiaryName="Bénéficiaire requis";
+    setFieldErr(e); return Object.keys(e).length===0;
+  };
+
+  const submit = async (e:React.FormEvent)=>{
+    e.preventDefault(); setErr(null);
+    if(!validate()) return;
+    setLoading(true);
+    try{
+      const j = await api<{id:string}>("/api/orders", { method:"POST", body: JSON.stringify({ ...form, amountSats: Number(form.amountSats) }) });
+      nav(`/orders/${j.id}`);
+    }catch(ex){ setErr((ex as Error).message);} finally{ setLoading(false);}
+  };
+
+  const btc = satsToBtc(Number(form.amountSats)||0);
+
+  return (
+    <div className="page" style={{maxWidth:980}}>
+      <div className="crumbs" style={{marginBottom:12}}><Link to="/">← Commandes</Link><span aria-hidden>·</span><span>Nouvelle commande</span></div>
+      <div style={{display:"grid", gridTemplateColumns:"1.2fr .8fr", gap:18}} className="new-grid">
+        <form onSubmit={submit} className="panel panel-pad" style={{display:"grid", gap:16}}>
+          <div>
+            <div className="eyebrow">Création guidée</div>
+            <h1 className="brand" style={{margin:"6px 0 6px", fontSize:26, color:"var(--forest)", letterSpacing:"-0.03em"}}>Nouvelle commande</h1>
+            <p style={{margin:0, color:"var(--ink-60)", fontSize:13}}>Renseignez le montant en sats (1 BTC = 100 000 000 sats), l’objet et les acteurs. La commande démarre en <em>En attente de paiement</em>.</p>
+          </div>
+
+          <div className="section-title" style={{marginTop:4}}><span style={{width:8,height:8,borderRadius:4,background:"var(--coral)",display:"inline-block"}}/> Montant & objet</div>
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
+            <label className="field"><span className="field-label">Montant (sats) *</span>
+              <input className="input" type="number" value={form.amountSats} onChange={e=>setForm({...form, amountSats: Number(e.target.value)})} min={1000} max={100_000_000} required aria-describedby="hint-amount"/>
+              <span id="hint-amount" className="field-hint">{Number(form.amountSats).toLocaleString("fr-FR")} sats ≈ {btc} BTC</span>
+              {fieldErr.amountSats && <span className="error" style={{padding:"6px 10px"}}>{fieldErr.amountSats}</span>}
+            </label>
+            <label className="field"><span className="field-label">Description *</span>
+              <input className="input" value={form.description} onChange={e=>setForm({...form, description:e.target.value})} required placeholder="Ex. Riz 25kg — lot 3"/>
+              {fieldErr.description && <span className="error" style={{padding:"6px 10px"}}>{fieldErr.description}</span>}
+            </label>
+          </div>
+
+          <div className="section-title"><IcoTruck/> Acteurs</div>
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
+            <label className="field"><span className="field-label">Vendeur *</span>
+              <input className="input" value={form.sellerLabel} onChange={e=>setForm({...form, sellerLabel:e.target.value})} required />
+              {fieldErr.sellerLabel && <span className="error" style={{padding:"6px 10px"}}>{fieldErr.sellerLabel}</span>}
+            </label>
+            <label className="field"><span className="field-label">Bénéficiaire du versement *</span>
+              <input className="input" value={form.beneficiaryName} onChange={e=>setForm({...form, beneficiaryName:e.target.value})} required />
+              {fieldErr.beneficiaryName && <span className="error" style={{padding:"6px 10px"}}>{fieldErr.beneficiaryName}</span>}
+            </label>
+          </div>
+          <label className="field"><span className="field-label">Téléphone (indice, optionnel)</span>
+            <input className="input" value={form.beneficiaryPhoneHint} onChange={e=>setForm({...form, beneficiaryPhoneHint:e.target.value})} placeholder="Ex. 771234567 — pour pré-remplir le versement" />
+            <span className="field-hint">Utilisé pour pré-remplir le bénéficiaire du payout. Aucun SMS envoyé en DEMO.</span>
+          </label>
+
+          <div className="section-title"><IcoShield/> Mode</div>
+          <label className="check">
+            <input type="checkbox" checked={form.demoMode} onChange={e=>setForm({...form, demoMode:e.target.checked})} style={{marginTop:2}}/>
+            <span style={{display:"grid", gap:2}}>
+              <strong style={{fontSize:13}}>Mode démonstration (recommandé sans clés Bitnob)</strong>
+              <span style={{fontSize:12, color:"var(--ink-60)"}}>Facture <span className="mono">DEMO_NO_FUNDS</span>, statuts <span className="mono">*_demo</span>, cotation estimée — jamais présenté comme réel. Décochez pour tenter une facture Bitnob réelle (nécessite <span className="mono">BITNOB_CLIENT_ID/SECRET</span>).</span>
+            </span>
+          </label>
+
+          {err && <div className="error">{err}</div>}
+          <button className="btn btn-coral" disabled={loading} style={{justifyContent:"center"}}>
+            {loading ? "Création…" : "Créer la commande"} <IcoArrow/>
+          </button>
+          <div style={{fontSize:11, color:"var(--ink-40)"}}>* Champs obligatoires. Validation Zod côté serveur conservée.</div>
+        </form>
+
+        <div style={{display:"grid", gap:12, alignContent:"start"}}>
+          <div className="panel panel-pad" style={{background:"var(--forest)", color:"var(--ivory)", borderColor:"rgba(245,241,232,.12)"}}>
+            <div className="eyebrow" style={{color:"var(--sage)"}}>Prévisualisation</div>
+            <div style={{fontFamily:"Space Grotesk, sans-serif", fontWeight:700, fontSize:18, marginTop:6}}>{form.description || "—"}</div>
+            <div style={{display:"grid", gap:8, marginTop:12}}>
+              <div className="kv"><span className="kv-k">Montant</span><span className="kv-v"><strong>{Number(form.amountSats).toLocaleString("fr-FR")} sats</strong> <span style={{opacity:.7}}>· {btc} BTC</span></span></div>
+              <div className="kv"><span className="kv-k">Vendeur</span><span className="kv-v">{form.sellerLabel||"—"}</span></div>
+              <div className="kv"><span className="kv-k">Bénéficiaire</span><span className="kv-v">{form.beneficiaryName||"—"} {form.beneficiaryPhoneHint && <span style={{opacity:.7}}>· {form.beneficiaryPhoneHint}</span>}</span></div>
+              <div className="kv"><span className="kv-k">Mode</span><span className="kv-v">{form.demoMode ? <span className="badge badge-demo" style={{fontSize:11}}>DEMO — AUCUN FONDS RÉEL</span> : <span className="badge" style={{background:"var(--paper)", color:"var(--forest)"}}>SANDBOX — test réel</span>}</span></div>
+            </div>
+            <div style={{marginTop:12, fontSize:12, color:"rgba(245,241,232,.72)"}}>À la création : <span className="mono">created → awaiting_payment</span> · transitions journalisées.</div>
+          </div>
+          <div className="panel panel-pad">
+            <div className="section-title">Ce qui suit</div>
+            <ol style={{margin:"8px 0 0 18px", color:"var(--ink-60)", fontSize:13, lineHeight:1.7}}>
+              <li>Générer la facture Lightning (DEMO ou Bitnob)</li>
+              <li>Confirmer le paiement · financer</li>
+              <li>Déposer la preuve de livraison</li>
+              <li>Confirmer la réception · coter & verser en XOF</li>
+            </ol>
+          </div>
+        </div>
+      </div>
+      <style>{`@media(max-width:900px){.new-grid{grid-template-columns:1fr!important}}`}</style>
+    </div>
+  );
+}
+
+/* ---------- Stepper ---------- */
+type Step = {key:string; label:string; sub:string};
+const STEPS: Step[] = [
+  {key:"pay", label:"Paiement", sub:"Lightning"},
+  {key:"fund", label:"Financement", sub:"BTC → USDT"},
+  {key:"deliver", label:"Livraison", sub:"Preuve"},
+  {key:"receive", label:"Réception", sub:"Confirmation"},
+  {key:"payout", label:"Versement", sub:"XOF"},
+];
+function stepState(status:string, idx:number){
+  const order = ["created","awaiting_payment","payment_confirmed","conversion_pending","funded","delivery_declared","delivery_confirmed","payout_pending","payout_processing","payout_completed"] as const;
+  const rank:Record<string,number>={ created:0, awaiting_payment:0, payment_confirmed:1, conversion_pending:1, funded:2, delivery_declared:3, delivery_confirmed:4, payout_pending:4, payout_processing:4, payout_completed:5, failed: -1, expired:-1, disputed:-1 };
+  const r = rank[status] ?? 0;
+  const thresholds = [0,1,2,3,4]; // step idx done when r > threshold
+  const done = r > thresholds[idx] || (status==="payout_completed" && idx<=4);
+  const active = r===thresholds[idx] && status!=="payout_completed" && r!==-1;
+  // funded means pay+fund done
+  if(status==="funded" && idx<2) return {done:true, active:false};
+  if(status==="funded" && idx===2) return {done:false, active:true};
+  if(status==="payment_confirmed" && idx===0) return {done:true, active:false};
+  if(status==="payment_confirmed" && idx===1) return {done:false, active:true};
+  return {done, active};
+}
+
+/* ---------- Order detail (PRIORITÉ) ---------- */
+function OrderDetail(){
+  const {id} = useParams();
+  const [data, setData] = React.useState<Record<string,unknown>|null>(null);
+  const [err, setErr] = React.useState<string|null>(null);
+  const [proofNote, setProofNote] = React.useState("Colis remis au point relais — photo à l'appui (démo)");
+  const [benef, setBenef] = React.useState({ destination_type:"mobile_money" as const, country:"SN", account_name:"Aminata Diallo", account_number:"771234567", network:"WAVE" });
+  const [quoteId, setQuoteId] = React.useState("");
+  const [copied, setCopied] = React.useState<string|null>(null);
+  const [showTech, setShowTech] = React.useState(false);
+
+  const load = React.useCallback(async ()=>{
+    try{
+      const j = await api<Record<string,unknown>>(`/api/orders/${id}`);
+      setData(j);
+      const pq = (j.payoutQuotes as Array<Record<string,unknown>>|undefined)?.[0];
+      if(pq) setQuoteId(pq.id as string);
+    }catch(e){ setErr((e as Error).message); }
+  },[id]);
+
+  React.useEffect(()=>{ load(); const t=setInterval(load, 4000); return ()=>clearInterval(t);},[load]);
+
+  const copy = async (text:string, key:string)=>{
+    try{ await navigator.clipboard.writeText(text); setCopied(key); setTimeout(()=>setCopied(null), 1600);}catch{}
+  };
+
+  if(err) return <div className="page"><div className="error">{err}</div><Link to="/" className="btn" style={{marginTop:12}}>← Retour</Link></div>;
+  if(!data) return <div className="page"><div className="notice">Chargement…</div></div>;
+  const order = data.order as Record<string,unknown>;
+  const isDemo = (order.demo_mode as number)===1;
+  const status = order.status as string;
+  const invoices = (data.invoices as Array<Record<string,unknown>>) ?? [];
+  const proofs = (data.proofs as Array<Record<string,unknown>>) ?? [];
+  const pQuotes = (data.payoutQuotes as Array<Record<string,unknown>>) ?? [];
+  const payouts = (data.payouts as Array<Record<string,unknown>>) ?? [];
+  const transitions = (data.transitions as Array<Record<string,unknown>>) ?? [];
+  const lastInvoice = invoices[0];
+  const isTerminal = ["payout_completed","failed","expired"].includes(status);
+
+  const call = async (path:string, body?:unknown)=>{
+    setErr(null);
+    try{ await api(path, body?{method:"POST", body:JSON.stringify(body)}:{method:"POST"}); await load();}
+    catch(e){ setErr((e as Error).message); }
+  };
+
+  // primary action panel content
+  let primary: {kicker:string; title:string; desc:string; actions: React.ReactNode} | null = null;
+  if(!lastInvoice){
+    primary = { kicker:"Étape 1 · Paiement", title:"Générer la facture Lightning", desc: isDemo ? "Facture de démonstration — chaîne DEMO_NO_FUNDS, statut pending_demo. Aucun fonds déplacé." : "Facture réelle via Bitnob (POST /api/lightning/invoices). Nécessite BITNOB_CLIENT_ID/SECRET.", actions: <button className="btn btn-coral" onClick={()=>call(`/api/orders/${id}/invoice`)}><IcoBolt/> Générer facture Lightning</button> };
+  } else if(status==="awaiting_payment" || status==="created"){
+    primary = { kicker:"Étape 1 · Paiement en attente", title: isDemo ? "Confirmer le paiement (DEMO)" : "Vérifier le paiement réel", desc: isDemo ? "Simule l’arrivée du paiement Lightning et finance la commande (paid_demo → funded). Action réservée aux commandes demo." : "Interroge Bitnob (GET /api/lightning/invoices/:id). Reste en attente si non payé.", actions: (
+      <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
+        <button className="btn" disabled={!!String(lastInvoice.status).includes("demo")} onClick={()=>call(`/api/orders/${id}/check-payment`)}><IcoShield/> Vérifier paiement (réel)</button>
+        {isDemo && <button className="btn btn-coral" onClick={()=>call(`/api/orders/${id}/demo/confirm-payment`)} disabled={status!=="awaiting_payment" && status!=="created"}><IcoCheck/> Simuler paiement confirmé (DEMO)</button>}
+      </div>
+    )};
+  } else if(status==="funded"){
+    primary = { kicker:"Étape 3 · Livraison", title:"Déposer la preuve de livraison", desc:"Visible par le bénéficiaire. Passage funded → delivery_declared. Seul le vendeur dépose.", actions: (
+      <div style={{display:"grid", gap:10}}>
+        <textarea className="input" value={proofNote} onChange={e=>setProofNote(e.target.value)} rows={3} aria-label="Note de preuve"/>
+        <button className="btn btn-coral" onClick={()=>call(`/api/orders/${id}/proof`, {note: proofNote})}><IcoTruck/> Déposer preuve de livraison</button>
+      </div>
+    )};
+  } else if(status==="delivery_declared"){
+    primary = { kicker:"Étape 4 · Réception", title:"Confirmer la réception", desc:"Action du bénéficiaire. Passage delivery_declared → delivery_confirmed. Débloque la cotation XOF.", actions: <button className="btn btn-coral" onClick={()=>call(`/api/orders/${id}/confirm-delivery`)}><IcoCheck/> Confirmer réception (bénéficiaire)</button> };
+  } else if(status==="delivery_confirmed"){
+    const hasQuote = pQuotes.length>0;
+    primary = { kicker:"Étape 5 · Versement", title: hasQuote ? "Initialiser le versement XOF" : "Demander une cotation XOF", desc: hasQuote ? "Choisissez la cotation et le bénéficiaire (mobile money / banque). Anti double-versement actif (409 si déjà en cours)." : "Cotation estimée DEMO (sats × 600 ≈ XOF) ou réelle via POST /api/payouts/quotes. Une seule cotation active à la fois.", actions: hasQuote ? (
+      <div style={{display:"grid", gap:10}}>
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10}}>
+          <label className="field"><span className="field-label">Nom bénéficiaire</span><input className="input" value={benef.account_name} onChange={e=>setBenef({...benef, account_name:e.target.value})}/></label>
+          <label className="field"><span className="field-label">Numéro / compte</span><input className="input" value={benef.account_number} onChange={e=>setBenef({...benef, account_number:e.target.value})}/></label>
+        </div>
+        <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10}}>
+          <label className="field"><span className="field-label">Type</span><select value={benef.destination_type} onChange={e=>setBenef({...benef, destination_type:e.target.value as never})}><option value="mobile_money">Mobile money</option><option value="bank">Banque</option></select></label>
+          <label className="field"><span className="field-label">Réseau</span><input className="input" value={benef.network} onChange={e=>setBenef({...benef, network:e.target.value})} placeholder="WAVE, Orange…"/></label>
+        </div>
+        <label className="field"><span className="field-label">Cotation à utiliser</span>
+          <select className="input mono" value={quoteId} onChange={e=>setQuoteId(e.target.value)}>{pQuotes.map(q=> <option key={q.id as string} value={q.id as string}>{q.id as string} — {q.status as string}</option>)}</select>
+        </label>
+        <button className="btn btn-coral" onClick={()=>call(`/api/orders/${id}/payout/initialize`, {quoteId, beneficiary:{...benef, country:"SN"}})}><IcoWallet/> Initialiser versement</button>
+      </div>
+    ) : <button className="btn btn-coral" onClick={()=>call(`/api/orders/${id}/payout/quote`, {toCurrency:"XOF", country:"SN", fromAsset:"USDT"})}><IcoWallet/> Demander cotation XOF</button> };
+  } else if(status==="payout_pending" || status==="payout_processing"){
+    primary = { kicker:"Étape 5 · Versement en cours", title: status==="payout_pending" ? "Versement en attente" : "Versement en cours d’exécution", desc: isDemo ? "En DEMO, confirmez la finalisation pour passer à payout_completed (anti double-versement conservé)." : "En réel, l’état est mis à jour par Bitnob/webhook (HMAC-SHA512). Ne répétez pas la demande si incertain.", actions: isDemo ? <button className="btn btn-coral" onClick={()=>call(`/api/orders/${id}/demo/confirm-payout`)}><IcoCheck/> Simuler versement terminé (DEMO)</button> : <span className="notice">En attente de confirmation externe.</span> };
+  } else if(isTerminal){
+    primary = null;
+  }
+
+  const estimatedFor = (q:Record<string,unknown>)=>{
+    try{ const j=JSON.parse(q.raw_json as string); if(j.estimatedXof) return `${j.estimatedXof.toLocaleString("fr-FR")} XOF estimé · frais ~${j.feesDemo?.toLocaleString("fr-FR")} XOF`; if(j.label) return j.label; return ""; }catch{ return String(q.raw_json??"").slice(0,80); }
+  };
+
+  return (
+    <div className="page">
+      <div className="crumbs"><Link to="/">← Commandes</Link><span aria-hidden>·</span><span className="mono">{order.id as string}</span></div>
+
+      <div className="detail-grid" style={{marginTop:12}}>
+        <div className="detail-main">
+          <div className="panel panel-pad order-head">
+            <div className="order-title-row">
+              <h1 className="order-title">{order.description as string}</h1>
+              <span className={STATUS_TONE[status] ?? "badge"}><span className="dot"/>{STATUS_LABEL[status] ?? status}</span>
+              {isDemo ? <span className="badge badge-demo">DEMO — AUCUN FONDS RÉEL</span> : <span className="badge">SANDBOX — test réel</span>}
+            </div>
+            <div className="meta-row">
+              <span className="ref mono" title={order.id as string}>Réf { (order.id as string).slice(0,16) }…</span>
+              <span><strong>{(order.amount_sats as number).toLocaleString("fr-FR")} sats</strong> <span className="mono" style={{color:"var(--ink-40)"}}>· {satsToBtc(order.amount_sats as number)} BTC</span></span>
+              <span>· vendeur <strong>{order.seller_label as string}</strong></span>
+              <span>· bénéficiaire <strong>{order.beneficiary_name as string}</strong></span>
+              <button className="btn btn-sm" onClick={()=>copy(order.id as string, "ref")}><IcoCopy/> {copied==="ref" ? "Copié" : "Copier réf"}</button>
+            </div>
+            {isDemo && <div className="notice" style={{borderColor:"#FFC9A8", background:"#FFF1E6", color:"#7c2d12"}}><strong>DÉMONSTRATION — AUCUN FONDS RÉEL</strong> — factures, cotations et versements de cette commande sont simulés, marqués DEMO en base et dans les logs.</div>}
+            <div className="stepper" role="list" aria-label="Progression">
+              {STEPS.map((s, i)=>{
+                const st = stepState(status, i);
+                return (
+                  <div key={s.key} className={`step ${st.done ? "done" : ""} ${st.active ? "active" : ""}`} role="listitem" aria-current={st.active ? "step" : undefined}>
+                    <div className="step-dot">{st.done ? <IcoCheck/> : st.active ? <span style={{width:8,height:8,borderRadius:8,background:"#fff",display:"block"}}/> : <span style={{width:6,height:6,borderRadius:6,background:"var(--ink-40)",display:"block"}}/>}</div>
+                    <div className="step-lbl">{s.label}</div>
+                    <div className="step-sub">{s.sub}</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {primary && (
+            <div className="action-panel">
+              <div className="action-kicker">{primary.kicker}</div>
+              <div className="action-title">{primary.title}</div>
+              <div className="action-desc">{primary.desc}</div>
+              {primary.actions}
+              {err && <div className="error" style={{marginTop:10}}>{err}</div>}
+            </div>
+          )}
+          {!primary && err && <div className="error">{err}</div>}
+          {isTerminal && status==="payout_completed" && (
+            <div className="panel panel-pad" style={{borderColor:"var(--sage)", background:"#EAF6EC"}}>
+              <div className="section-title" style={{color:"var(--ok)"}}><IcoCheck/> Parcours terminé</div>
+              <div style={{fontSize:13, color:"var(--ink-60)"}}>Versement marqué terminé {isDemo ? "(DEMO — simulation)" : "(confirmé Bitnob/webhook)"} — historique complet ci-contre.</div>
+            </div>
+          )}
+
+          <div className="panel panel-pad">
+            <div className="section-title"><IcoBolt/> Paiement Lightning</div>
+            <div className="section-rule"/>
+            {lastInvoice ? (
+              <div style={{display:"grid", gap:12}}>
+                <div style={{display:"flex", gap:8, flexWrap:"wrap", alignItems:"center"}}>
+                  <span className="mono" style={{fontSize:11, color:"var(--ink-40)"}}>Réf {(lastInvoice.reference as string).slice(0,12)}…</span>
+                  <span className="badge mono" style={{fontSize:11}}>{lastInvoice.status as string}</span>
+                  {String(lastInvoice.status).includes("demo") && <span className="badge badge-demo">DEMO</span>}
+                  <span className="mono" style={{fontSize:11, color:"var(--ink-40)"}}>Expire : {formatDateFR(lastInvoice.expires_at as string)}</span>
+                  <button className="btn btn-sm" onClick={()=>copy(lastInvoice.reference as string, "invref")}> {copied==="invref" ? "Copié" : <><IcoCopy/> Copier</>}</button>
+                </div>
+                <div className="invoice-box">
+                  <div style={{display:"flex", justifyContent:"space-between", gap:8, alignItems:"center"}}>
+                    <span className="mono" style={{fontSize:11, letterSpacing:".08em", opacity:.8}}>BOLT11 — tronqué visuellement, copiable intégralement</span>
+                    <button className="btn btn-sm" style={{background:"rgba(255,255,255,.12)", color:"var(--ivory)", borderColor:"rgba(245,241,232,.18)"}} onClick={()=>copy(lastInvoice.bolt11 as string, "bolt11")}>{copied==="bolt11" ? "Copié !" : <><IcoCopy/> Copier</>}</button>
+                  </div>
+                  <div className="mono" style={{background:"rgba(0,0,0,.18)", padding:"10px 11px", borderRadius:10, border:"1px solid rgba(245,241,232,.12)"}}>
+                    <span className="truncate" title={lastInvoice.bolt11 as string}>{lastInvoice.bolt11 as string}</span>
+                  </div>
+                  <div style={{display:"grid", gap:6}}>
+                    <div className="kv"><span className="kv-k">Montant</span><span className="kv-v mono">{(order.amount_sats as number).toLocaleString("fr-FR")} sats · {satsToBtc(order.amount_sats as number)} BTC</span></div>
+                    <div className="kv"><span className="kv-k">Statut</span><span className="kv-v">{String(lastInvoice.status).includes("demo") ? "En attente — simulation" : "En attente — vérifiable via Bitnob"}</span></div>
+                  </div>
+                </div>
+                {status==="awaiting_payment" && (
+                  <div className="notice">Astuce : en DEMO, le bouton <strong>Simuler paiement confirmé</strong> est dans le panneau d’action principal ci-dessus.</div>
                 )}
               </div>
-            </div>
-          ) : (
-            <button className="btn btn-primary" onClick={() => call(`/api/orders/${id}/invoice`)}>Générer facture Lightning</button>
-          )}
-        </div>
-        <div className="card">
-          <h3>Livraison & réception</h3>
-          {status === "funded" && (
-            <div className="grid">
-              <textarea className="input" value={proofNote} onChange={(e) => setProofNote(e.target.value)} rows={3} />
-              <button className="btn btn-primary" onClick={() => call(`/api/orders/${id}/proof`, { note: proofNote })}>Déposer preuve de livraison</button>
-            </div>
-          )}
-          {status === "delivery_declared" && <button className="btn btn-primary" onClick={() => call(`/api/orders/${id}/confirm-delivery`)}>Confirmer réception (bénéficiaire)</button>}
-          {proofs.length > 0 && (
-            <ul className="small">
-              {proofs.map((p) => (
-                <li key={p.id as string}>{p.note as string} — {new Date(p.created_at as string).toLocaleString("fr-FR")}</li>
-              ))}
-            </ul>
-          )}
-          {status !== "funded" && status !== "delivery_declared" && proofs.length === 0 && <p className="muted small">Disponible après financement.</p>}
-        </div>
-      </div>
-
-      <div className="card">
-        <h3>Versement XOF</h3>
-        {status === "delivery_confirmed" && <button className="btn btn-primary" onClick={() => call(`/api/orders/${id}/payout/quote`, { toCurrency: "XOF", country: "SN", fromAsset: "USDT" })}>Demander cotation XOF</button>}
-        {pQuotes.length > 0 && (
-          <table className="table">
-            <thead><tr><th>Cotation</th><th>Statut</th><th>Détail</th></tr></thead>
-            <tbody>
-              {pQuotes.map((q) => (
-                <tr key={q.id as string}>
-                  <td style={{ fontFamily: "monospace", fontSize: 12 }}>{(q.id as string).slice(0, 10)}…</td>
-                  <td>{q.status as string} {String(q.status).includes("demo") && <span className="badge badge-demo">DEMO</span>}</td>
-                  <td className="small">{q.raw_json ? (() => { try { const j = JSON.parse(q.raw_json as string); return j.estimatedXof ? `${j.estimatedXof.toLocaleString("fr-FR")} XOF estimé (frais ~${j.feesDemo?.toLocaleString("fr-FR")} XOF)` : j.label ?? ""; } catch { return String(q.raw_json).slice(0, 80); } })() : ""}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        {pQuotes.length > 0 && status === "delivery_confirmed" && (
-          <div className="grid" style={{ marginTop: 12 }}>
-            <div className="grid grid-2">
-              <label>Nom bénéficiaire<input className="input" value={benef.account_name} onChange={(e) => setBenef({ ...benef, account_name: e.target.value })} /></label>
-              <label>Numéro / compte<input className="input" value={benef.account_number} onChange={(e) => setBenef({ ...benef, account_number: e.target.value })} /></label>
-            </div>
-            <div className="grid grid-2">
-              <label>Type<select value={benef.destination_type} onChange={(e) => setBenef({ ...benef, destination_type: e.target.value as never })}><option value="mobile_money">Mobile money</option><option value="bank">Banque</option></select></label>
-              <label>Réseau (Wave/Orange)<input className="input" value={benef.network} onChange={(e) => setBenef({ ...benef, network: e.target.value })} /></label>
-            </div>
-            <label>Cotation à utiliser<select className="input" value={quoteId} onChange={(e) => setQuoteId(e.target.value)}>{pQuotes.map((q) => <option key={q.id as string} value={q.id as string}>{q.id as string} — {q.status as string}</option>)}</select></label>
-            <button className="btn btn-primary" onClick={() => call(`/api/orders/${id}/payout/initialize`, { quoteId, beneficiary: { ...benef, country: "SN" } })}>Initialiser versement</button>
+            ) : (
+              <div className="notice">Aucune facture pour l’instant. L’action principale ci-dessus permet de la générer.</div>
+            )}
           </div>
-        )}
-        {payouts.length > 0 && (
-          <div style={{ marginTop: 12 }}>
-            <h4>Versements</h4>
-            <table className="table">
-              <thead><tr><th>ID</th><th>Statut</th><th>Réf</th></tr></thead>
-              <tbody>{payouts.map((p) => <tr key={p.id as string}><td style={{ fontFamily: "monospace", fontSize: 11 }}>{(p.id as string).slice(0, 10)}…</td><td>{p.status as string} {String(p.status).includes("demo") && <span className="badge badge-demo">DEMO</span>}</td><td style={{ fontFamily: "monospace", fontSize: 11 }}>{p.reference as string}</td></tr>)}</tbody>
-            </table>
-            {isDemo && (status === "payout_pending" || status === "payout_processing") && <button className="btn btn-demo" onClick={() => call(`/api/orders/${id}/demo/confirm-payout`)} style={{ marginTop: 8 }}>Simuler versement terminé (DEMO)</button>}
-            {status === "payout_completed" && <p className="badge badge-ok">Versement marqué terminé {isDemo ? "(DEMO)" : "(réel — confirmé par Bitnob/webhook)"}</p>}
+
+          <div className="panel panel-pad">
+            <div className="section-title"><IcoTruck/> Livraison & réception</div>
+            <div className="section-rule"/>
+            {proofs.length>0 && (
+              <ul style={{margin:0, paddingLeft:18, display:"grid", gap:8}}>
+                {proofs.map(p=> <li key={p.id as string} style={{fontSize:13}}><strong>{p.note as string}</strong> <span className="mono" style={{fontSize:11, color:"var(--ink-40)"}}>· {formatDateFR(p.created_at as string)} · par {p.created_by as string}</span></li>)}
+              </ul>
+            )}
+            {proofs.length===0 && status!=="funded" && status!=="delivery_declared" && <div className="notice">Disponible après financement. La preuve débloque la réception.</div>}
+            {status==="funded" && proofs.length===0 && <div className="notice">Déposez la preuve via le panneau d’action principal — elle apparaîtra ici.</div>}
+            {status==="delivery_declared" && <div className="notice">En attente de confirmation du bénéficiaire (bouton dans le panneau d’action).</div>}
+            {status==="delivery_confirmed" && <div className="notice notice-strong">Réception confirmée — la cotation XOF peut être demandée.</div>}
           </div>
-        )}
-      </div>
 
-      <div className="card">
-        <h3>Historique</h3>
-        <table className="table">
-          <thead><tr><th>Date</th><th>Transition</th><th>Acteur</th></tr></thead>
-          <tbody>{transitions.map((t) => <tr key={t.id as string}><td className="small">{new Date(t.created_at as string).toLocaleString("fr-FR")}</td><td className="small">{t.from_status as string} → {t.to_status as string}</td><td className="small">{t.actor as string}</td></tr>)}</tbody>
-        </table>
-        {transitions.length === 0 && <p className="muted small">Aucune transition.</p>}
-      </div>
+          <div className="panel panel-pad">
+            <div className="section-title"><IcoWallet/> Versement XOF</div>
+            <div className="section-rule"/>
+            {pQuotes.length===0 && <div className="notice">Aucune cotation. Elle sera demandée après réception confirmée.</div>}
+            {pQuotes.length>0 && (
+              <div className="table-wrap">
+                <table className="table">
+                  <thead><tr><th>Cotation</th><th>Statut</th><th>Détail</th><th></th></tr></thead>
+                  <tbody>
+                    {pQuotes.map(q=>(
+                      <tr key={q.id as string}>
+                        <td className="mono thin">{(q.id as string).slice(0,14)}…</td>
+                        <td><span className="badge mono" style={{fontSize:11}}>{q.status as string}</span> {String(q.status).includes("demo") && <span className="badge badge-demo">DEMO</span>}</td>
+                        <td style={{fontSize:12, color:"var(--ink-60)"}}>{estimatedFor(q)}</td>
+                        <td><button className="btn btn-sm" onClick={()=>copy(q.id as string, q.id as string)}>{copied===(q.id as string) ? "Copié" : <><IcoCopy/> Copier</>}</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {payouts.length>0 && (
+              <div style={{marginTop:12}}>
+                <div className="section-title" style={{fontSize:13}}>Versements</div>
+                <div className="table-wrap" style={{marginTop:8}}>
+                  <table className="table">
+                    <thead><tr><th>ID</th><th>Statut</th><th>Réf</th><th>Bénéficiaire</th></tr></thead>
+                    <tbody>
+                      {payouts.map(p=>{
+                        const b = (p.beneficiary ?? {}) as Record<string,string>;
+                        return (
+                          <tr key={p.id as string}>
+                            <td className="mono thin">{(p.id as string).slice(0,12)}…</td>
+                            <td><span className="badge mono" style={{fontSize:11}}>{p.status as string}</span> {String(p.status).includes("demo") && <span className="badge badge-demo">DEMO</span>}</td>
+                            <td className="mono thin">{p.reference as string}</td>
+                            <td style={{fontSize:12}}>{b.account_name ?? "—"} <span className="mono" style={{fontSize:11, color:"var(--ink-40)"}}>{b.account_number ?? ""} {b.network ? `· ${b.network}` : ""}</span></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+            {status==="payout_completed" && <div className="notice notice-strong" style={{marginTop:10, borderColor:"var(--sage)", background:"#EAF6EC"}}><strong>Versement marqué terminé {isDemo ? "(DEMO)" : "(réel)"}.</strong> Montants estimés clairement identifiés comme tels — non présentés comme exécutés avant confirmation.</div>}
+          </div>
+        </div>
 
-      {err && <p style={{ color: "crimson" }}>{err}</p>}
-      <Link to="/">← Retour aux commandes</Link>
+        <div className="detail-side">
+          <div className="panel panel-pad">
+            <div className="section-title">Historique</div>
+            <div className="section-rule"/>
+            <div className="timeline">
+              {transitions.map(t=>{
+                const isDemoActor = String(t.actor)==="demo";
+                return (
+                  <div key={t.id as string} className={`tl-item ${isDemoActor ? "done" : ""}`}>
+                    <div className="tl-date mono">{formatDateFR(t.created_at as string)}</div>
+                    <div className="tl-title">{STATUS_LABEL[t.from_status as string] ?? t.from_status} → {STATUS_LABEL[t.to_status as string] ?? t.to_status} {isDemoActor && <span className="badge badge-demo" style={{marginLeft:6}}>DEMO</span>}</div>
+                    <div className="tl-meta">Acteur : <span className="mono">{t.actor as string}</span> {t.reason ? `· ${t.reason as string}` : ""}</div>
+                  </div>
+                );
+              })}
+              {transitions.length===0 && <div className="notice">Aucune transition.</div>}
+            </div>
+          </div>
+
+          <div className="panel panel-pad">
+            <div style={{display:"flex", justifyContent:"space-between", alignItems:"center"}}>
+              <div className="section-title">Détails techniques</div>
+              <button className="btn btn-sm" onClick={()=>setShowTech(v=>!v)}>{showTech ? "Masquer" : "Afficher"}</button>
+            </div>
+            <div className="section-rule"/>
+            <div style={{display:"grid", gap:8, fontSize:12}}>
+              <div className="kv" style={{gridTemplateColumns:"1fr"}}><span className="kv-k">Order ID</span><span className="mono thin" style={{color:"var(--ink)", wordBreak:"break-all"}}>{order.id as string}</span></div>
+              <div className="kv" style={{gridTemplateColumns:"1fr 1fr"}}><span className="kv-k">Créée</span><span className="mono">{formatDateFR(order.created_at as string)}</span></div>
+              <div className="kv" style={{gridTemplateColumns:"1fr 1fr"}}><span className="kv-k">Mise à jour</span><span className="mono">{formatDateFR(order.updated_at as string)}</span></div>
+              <div className="kv" style={{gridTemplateColumns:"1fr 1fr"}}><span className="kv-k">Statut brut</span><span className="mono">{status}</span></div>
+            </div>
+            {showTech && (
+              <div style={{marginTop:12, display:"grid", gap:10}}>
+                {invoices.length>0 && <details open><summary className="field-label">Factures ({invoices.length})</summary><pre className="json" style={{marginTop:8, maxHeight:220}}>{JSON.stringify(invoices, null, 2)}</pre></details>}
+                {pQuotes.length>0 && <details><summary className="field-label">Cotations ({pQuotes.length})</summary><pre className="json" style={{marginTop:8, maxHeight:220}}>{JSON.stringify(pQuotes, null, 2)}</pre></details>}
+                {payouts.length>0 && <details><summary className="field-label">Payouts ({payouts.length})</summary><pre className="json" style={{marginTop:8, maxHeight:220}}>{JSON.stringify(payouts, null, 2)}</pre></details>}
+                <details><summary className="field-label">Transitions brutes</summary><pre className="json" style={{marginTop:8, maxHeight:260}}>{JSON.stringify(transitions, null, 2)}</pre></details>
+              </div>
+            )}
+          </div>
+
+          <div className="panel panel-pad" style={{background:"rgba(185,216,189,.18)", borderColor:"var(--sage)"}}>
+            <div className="section-title"><IcoShield/> Sécurité & traçabilité</div>
+            <div style={{fontSize:12, color:"var(--ink-60)", lineHeight:1.6, marginTop:6}}>
+              Backend seul autorisé à faire les transitions. Webhook HMAC-SHA512 sur corps brut + déduplication. Montants validés en <span className="mono">sats</span>. Aucun secret dans le frontend.
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-function Health() {
-  const [data, setData] = React.useState<Record<string, unknown> | null>(null);
-  React.useEffect(() => {
-    fetch(`${import.meta.env.VITE_API_URL ?? "http://localhost:4000"}/api/preflight`).then((r) => r.json()).then(setData).catch(() => setData({ error: "API non joignable" }));
-  }, []);
+/* ---------- Health ---------- */
+function Health(){
+  const [data, setData] = React.useState<Record<string,unknown>|null>(null);
+  const [err, setErr] = React.useState<string|null>(null);
+  React.useEffect(()=>{
+    fetch(`${import.meta.env.VITE_API_URL ?? "http://localhost:4000"}/api/preflight`).then(r=>r.json()).then(setData).catch(()=> setErr("API non joignable"));
+  },[]);
+  const bitnob = (data as Record<string,unknown> | null)?.bitnob as Record<string,unknown> | undefined;
+  const configured = Boolean(bitnob?.configured);
   return (
-    <div className="container card">
-      <h2>Santé / Preflight</h2>
-      <pre style={{ background: "#f1f5f9", padding: 16, borderRadius: 10, overflow: "auto", fontSize: 12 }}>{JSON.stringify(data, null, 2)}</pre>
-      <p className="small muted">Lecture seule (GET /api/whoami, /api/balances, etc.) — aucun mouvement de fonds.</p>
+    <div className="page">
+      <div className="eyebrow">Intégration & diagnostics</div>
+      <h1 className="brand" style={{fontSize:26, color:"var(--forest)", margin:"6px 0 10px"}}>Santé / Preflight</h1>
+      <p style={{color:"var(--ink-60)", maxWidth:60*12, fontSize:13}}>Lecture seule — aucun mouvement de fonds. Vérifie la connectivité et la présence des secrets côté serveur (jamais exposés au frontend).</p>
+
+      <div className="health-grid" style={{marginTop:14}}>
+        <div className={`health-card ${configured ? "health-ok" : "health-warn"}`}>
+          <div className="section-title"><IcoShield/> Bitnob</div>
+          <div style={{fontSize:13, color:"var(--ink-60)", marginTop:6}}>{configured ? "Configuré — appels réels possibles en sandbox" : "Non configuré — parcours en mode DEMO (simulé)"}</div>
+          <div style={{display:"grid", gap:6, marginTop:12, fontSize:12}}>
+            <div className="kv"><span className="kv-k">Base URL</span><span className="kv-v mono">{String((bitnob as Record<string,unknown>)?.baseUrl ?? "https://api.bitnob.com")}</span></div>
+            <div className="kv"><span className="kv-k">Client ID présent</span><span className="kv-v">{String(bitnob?.clientIdPresent ?? "—")}</span></div>
+            <div className="kv"><span className="kv-k">Webhook secret présent</span><span className="kv-v">{String(bitnob?.webhookSecretPresent ?? "—")}</span></div>
+          </div>
+          {!configured && <div className="notice" style={{marginTop:12}}>Renseignez <span className="mono">BITNOB_CLIENT_ID / SECRET / WEBHOOK_SECRET</span> dans <span className="mono">.env</span> (serveur) puis relancez <span className="mono">npm run preflight --workspace=server</span>.</div>}
+        </div>
+        <div className="health-card">
+          <div className="section-title">Backend</div>
+          <div style={{fontSize:13, color:"var(--ink-60)", marginTop:6}}>SQLite <span className="mono">node:sqlite</span> · Express · Zod · Vitest · HMAC</div>
+          <div style={{marginTop:10, display:"flex", gap:8, flexWrap:"wrap"}}>
+            <span className="badge mono">mode: {String((data as Record<string,unknown>)?.mode ?? "—")}</span>
+            <span className="badge mono">node: {String((data as Record<string,unknown>)?.node ?? "—")}</span>
+          </div>
+          <div className="notice" style={{marginTop:12, fontSize:12}}>Endpoints vérifiés en lecture : <span className="mono">GET /health, /api/preflight, /api/orders, /api/bitnob/status</span> — 0 fonds déplacé.</div>
+        </div>
+      </div>
+
+      <div className="panel panel-pad" style={{marginTop:14}}>
+        <div className="section-title">Réponse brute <span className="mono" style={{fontWeight:500, color:"var(--ink-40)"}}>/api/preflight</span></div>
+        <div className="section-rule"/>
+        {err ? <div className="error">{err}</div> : <pre className="json">{JSON.stringify(data, null, 2)}</pre>}
+        <div style={{fontSize:12, color:"var(--ink-60)", marginTop:8}}>Ne révèle aucune variable secrète. Les montants estimés restent identifiés comme tels.</div>
+      </div>
     </div>
   );
 }
 
-function App() {
+function App(){
   return (
     <BrowserRouter>
-      <TopBadge />
-      <Nav />
+      <TopBand/>
+      <SiteHeader/>
       <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/new" element={<NewOrder />} />
-        <Route path="/orders/:id" element={<OrderDetail />} />
-        <Route path="/health" element={<Health />} />
+        <Route path="/" element={<Home/>}/>
+        <Route path="/new" element={<NewOrder/>}/>
+        <Route path="/orders/:id" element={<OrderDetail/>}/>
+        <Route path="/health" element={<Health/>}/>
       </Routes>
+      <Footer/>
     </BrowserRouter>
   );
 }
 
-createRoot(document.getElementById("root")!).render(<App />);
+createRoot(document.getElementById("root")!).render(<App/>);
