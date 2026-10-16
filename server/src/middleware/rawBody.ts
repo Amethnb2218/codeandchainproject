@@ -1,4 +1,4 @@
-import type { Request, Response, NextFunction } from "express";
+import type { Request, Response } from "express";
 
 // Conserve le body brut pour verification HMAC webhook (x-bitnob-signature = HMAC-SHA512 du raw body)
 export function rawBodySaver(req: Request, _res: Response, buf: Buffer) {

@@ -354,7 +354,6 @@ const STEPS: Step[] = [
   {key:"payout", label:"Versement", sub:"XOF"},
 ];
 function stepState(status:string, idx:number){
-  const order = ["created","awaiting_payment","payment_confirmed","conversion_pending","funded","delivery_declared","delivery_confirmed","payout_pending","payout_processing","payout_completed"] as const;
   const rank:Record<string,number>={ created:0, awaiting_payment:0, payment_confirmed:1, conversion_pending:1, funded:2, delivery_declared:3, delivery_confirmed:4, payout_pending:4, payout_processing:4, payout_completed:5, failed: -1, expired:-1, disputed:-1 };
   const r = rank[status] ?? 0;
   const thresholds = [0,1,2,3,4]; // step idx done when r > threshold
@@ -391,7 +390,7 @@ function OrderDetail(){
   React.useEffect(()=>{ load(); const t=setInterval(load, 4000); return ()=>clearInterval(t);},[load]);
 
   const copy = async (text:string, key:string)=>{
-    try{ await navigator.clipboard.writeText(text); setCopied(key); setTimeout(()=>setCopied(null), 1600);}catch{}
+    try{ await navigator.clipboard.writeText(text); setCopied(key); setTimeout(()=>setCopied(null), 1600);}catch{ /* clipboard indisponible */ void 0; }
   };
 
   if(err) return <div className="page"><div className="error">{err}</div><Link to="/" className="btn" style={{marginTop:12}}>← Retour</Link></div>;

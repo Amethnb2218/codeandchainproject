@@ -62,19 +62,21 @@ npm.cmd run preflight --workspace=server  # sans fonds : whoami/balances/countri
 npm.cmd run dev --workspace=server        # backend :4000 (tsx watch)
 npm.cmd run dev --workspace=client        # frontend :5173 (vite)
 npm.cmd run dev                           # les deux (concurrently)
-npm.cmd test                              # server (21) + shared (--passWithNoTests)
+npm.cmd test                              # server (43) + shared (--passWithNoTests)
+npm.cmd run lint                          # ESLint réel (plus de fallback)
 npm.cmd run build --workspace=shared      # tsc shared
 npm.cmd run build --workspace=server      # tsc server
-npm.cmd run build --workspace=client      # vite build (front dist)
+npm.cmd run build --workspace=client      # tsc --noEmit + vite build (front dist)
 npm.cmd run build                         # tout
 ```
 
-## Tests & build (résultats réels 16 oct)
+## Tests & build (résultats réels 16 oct — vérifiés)
 
-- `npx vitest run` (server) : **21 passed** (sanity 9 + extended 12)
-- `tsc --noEmit` server : 0 erreur
-- `tsc` shared + server : 0 erreur
-- `vite build` client : 31 modules, 179 Ko (gz 58 Ko)
+- `npm test` : **43 passed** (sanity 9 + extended 34 — transitions, HMAC, webhook dedup, DEMO/SANDBOX, secrets hors frontend)
+- `npm run lint` : **0 erreur** (ESLint 9 + typescript-eslint 8, config `eslint.config.js`)
+- `tsc --noEmit` server/client/shared : **0 erreur** (client build corrigé `tsc --noEmit && vite build` — plus de `.js` parasites)
+- `vite build` client : **31 modules, 212.33 kB (gz 65.42 kB), CSS 12.25 kB (gz 3.17 kB)**
+- `npm run preflight --workspace=server` : **OK offline** (`configured:false` sans creds, sinon checks lecture seule sans fonds)
 
 ## Modes démonstration et sandbox
 
@@ -89,19 +91,20 @@ Avec creds sandbox : le même preflight teste `GET /api/whoami`, `/api/balances`
 
 Sources : https://bitnob.dev — https://bitnob.dev/llms.txt — https://bitnob.dev/api-reference/lightning|trading|payouts — OpenAPI https://bitnob.dev/api-collections/swagger/bitnob-api-v2.openapi.json
 
-## Limitations réelles (16 oct)
+## Limitations réelles (16 oct — vérifiées)
 
-- Aucun `BITNOB_CLIENT_ID/SECRET` fourni → parcours réel non vérifié en live (DEMO seul testé bout en bout)
-- Trading BTC→USDT non branché en automatique (conversion marquée `funded` en DEMO, `conversion_pending` en réel — quote trading à ajouter si pair disponible)
-- `BITNOB_CUSTOMER_ID` requis pour `POST /api/lightning/invoices` (à renseigner dans `.env` si fourni par l'orga)
-- Pas de déploiement distant (local uniquement)
+- Aucun `BITNOB_CLIENT_ID/SECRET` fourni → parcours réel non vérifié en live (DEMO testé bout en bout, 10 transitions `created→payout_completed`). Trading sandbox non éprouvé faute de paire testable ; le serveur expose désormais `POST /api/orders/:id/trading/quote|execute` + `GET .../trading/status` conformes OpenAPI (BTC→USDT SELL), avec garde `demo:403`, expiration et anti-double.
+- `BITNOB_CUSTOMER_ID` requis pour `POST /api/lightning/invoices` (`/api/orders/:id/check-payment` vérifie aussi `expires_at` et refuse les factures expirées 410)
+- Pas de déploiement distant — **production locale prête** : `npm run build` → `client/dist` servi par `server/src/index.ts` (`express.static` + SPA fallback, `GET /` → index.html, `GET /health` et `/api/*` intacts). Vérifié `curl http://localhost:4000/` 200 + `/health` JSON. `.env`/`*.db`/`uploads` jamais servis.
+- Lint était un fallback `|| echo ...` → remplacé par **ESLint 9 réel** (`eslint.config.js`, `npm run lint` 0). Stray `client/src/**/*.js` corrigé (`.gitignore` + `client build: tsc --noEmit && vite build`).
 
 ## Sécurité
 
-- Secrets jamais exposés au frontend (test `Secrets jamais dans frontend` vert), jamais committés, `.env` ignoré
-- Webhook : `rawBody` conservé via `express.json({verify: rawBodySaver})`, HMAC-SHA512 constant-time, dedup UNIQUE, 401 si secret configuré et signature fausse
-- `.gitignore` : `node_modules/`, `.env`, `data/`, `*.db`, `dist/`, `logs/`, `uploads/`, `preflight-report.json`
-- Pas de `Reference` utilisée comme idempotence aveugle — vérification état avant re-soumission
+- Secrets jamais exposés au frontend (test `Secrets jamais dans frontend` 2 tests verts), jamais committés, `.env` ignoré, `git ls-files` ne liste aucun `.env`/`.db`
+- Webhook : `rawBody` conservé via `express.json({verify: rawBodySaver})`, HMAC-SHA512 constant-time (timing-safe), dedup `UNIQUE(dedup_key)`, 401 si secret configuré et signature fausse, warning si sans secret
+- `.gitignore` : `node_modules/`, `.env`, `data/`, `*.db`, `dist/`, `logs/`, `uploads/`, `preflight-report.json`, `client/src/**/*.js`
+- Anti-rejeu : serveur garde `409` facture/cotation/payout déjà existante, `403` trading en DEMO, `400` check-payment sur facture demo, `410` invoice/quote expirée ; `GET .../trading/status` et `GET .../payout/status` à consulter avant retry
+- `helmet` + `cors` configurés ; aucun log n'imprime de clé (headers sanitizés `sanitizeHeaders`)
 
 ## Déploiement
 

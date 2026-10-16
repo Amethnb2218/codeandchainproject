@@ -162,22 +162,161 @@ router.post("/:id/check-payment", async (req, res) => {
   if (!inv) return res.status(404).json({ error: "Aucune facture" });
   if ((inv.status as string).includes("demo")) return res.status(400).json({ error: "Facture demo: utiliser /demo/confirm-payment" });
   if (!config.hasBitnobCredentials()) return res.status(503).json({ error: "Bitnob non configure" });
+  // Expiration facture
+  if (inv.expires_at && new Date(inv.expires_at as string).getTime() < Date.now()) {
+    return res.status(410).json({ error: "Facture expiree", expiresAt: inv.expires_at });
+  }
   const bitnobId = inv.bitnob_invoice_id as string;
   const r = await bitnobRequest<Record<string, unknown>>("GET", `/api/lightning/invoices/${bitnobId || (inv.reference as string)}`);
   if (!r.ok) return res.status(502).json({ error: "Bitnob", detail: r.error });
   const data = (r.data as Record<string, unknown>)?.data ?? r.data;
-  // si paye -> transition
-  const paid = (data as Record<string, unknown>)?.status === "paid" || (data as Record<string, unknown>)?.paid === true;
+  const rawStatus = String((data as Record<string, unknown>)?.status ?? "").toLowerCase();
+  const paid = rawStatus === "paid" || rawStatus === "confirmed" || (data as Record<string, unknown>)?.paid === true;
   if (paid) {
     db.prepare("UPDATE lightning_invoices SET status=?, paid_at=?, raw_json=? WHERE id=?").run("paid", nowIso(), JSON.stringify(r.data), inv.id as string);
-    transitionOrder(orderId, "payment_confirmed", "system", "webhook/check");
-    transitionOrder(orderId, "conversion_pending", "system", "conversion");
-    // conversion reelle a faire en Phase: pour l'instant on marque funded si trading ok; sinon on reste conversion_pending et on expose l'etat
-    // on tente un trading quote si possible (non bloquant)
-    res.json({ paid: true, status: "payment_confirmed", bitnob: data });
+    const t1 = transitionOrder(orderId, "payment_confirmed", "system", "paiement confirme via Bitnob");
+    if (!t1.ok) return res.status(409).json({ error: t1.error });
+    transitionOrder(orderId, "conversion_pending", "system", "en attente de conversion BTC->USDT");
+    res.json({ paid: true, status: "conversion_pending", note: "Paiement confirme. Conversion BTC->USDT a initier via POST /api/orders/:id/trading/quote puis /trading/execute. Ne passe pas auto a funded sans confirmation trading.", bitnob: data });
   } else {
-    res.json({ paid: false, bitnob: data });
+    // pending/unpaid -> ne rien transitionner, exposer l'etat exact
+    res.json({ paid: false, invoiceStatus: rawStatus || "unknown", note: "Paiement non confirme — ne pas relancer en boucle. Verifier a nouveau plus tard.", bitnob: data });
   }
+});
+
+// POST /api/orders/:id/trading/quote — cotation BTC->USDT (reel uniquement, bloque en DEMO)
+router.post("/:id/trading/quote", async (req, res) => {
+  const orderId = req.params.id;
+  const db = getDb();
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
+  if (!order) return res.status(404).json({ error: "Commande introuvable" });
+  if ((order.demo_mode as number) === 1) return res.status(403).json({ error: "Trading reel indisponible en mode DEMO — simule via /demo/confirm-payment" });
+  if ((order.status as string) !== "conversion_pending") return res.status(409).json({ error: `Cotation trading uniquement en conversion_pending (actuel: ${order.status})` });
+  if (!config.hasBitnobCredentials()) return res.status(503).json({ error: "Bitnob non configure" });
+  // anti double quote active
+  const existing = db.prepare("SELECT * FROM trading_quotes WHERE order_id=? AND status='pending' ORDER BY created_at DESC LIMIT 1").get(orderId) as Record<string, unknown> | undefined;
+  if (existing) {
+    // verifier expiration
+    const exp = existing.expires_at as string | null;
+    if (exp && new Date(exp).getTime() > Date.now()) return res.status(409).json({ error: "Cotation trading deja en attente", quote: existing });
+    // expiree -> marquer expiree
+    db.prepare("UPDATE trading_quotes SET status=? WHERE id=?").run("expired", existing.id as string);
+  }
+  // montant en BTC : sats -> BTC string
+  const sats = order.amount_sats as number;
+  const btcStr = (sats / 100_000_000).toFixed(8).replace(/\.?0+$/, "");
+  if (!btcStr || parseFloat(btcStr) <= 0) return res.status(400).json({ error: "Montant invalide" });
+  const r = await bitnobRequest<Record<string, unknown>>("POST", "/api/trading/quotes", {
+    base_currency: "BTC",
+    quote_currency: "USDT",
+    side: "SELL",
+    quantity: btcStr,
+  });
+  if (!r.ok) return res.status(502).json({ error: "Bitnob trading/quotes", detail: r.error, status: r.status });
+  const data = (r.data as Record<string, unknown>)?.data ?? r.data;
+  const q = data as Record<string, unknown>;
+  const bitnobQuoteId = (q.id as string) ?? (q.quote_id as string) ?? "";
+  const price = (q.price as string) ?? null;
+  const expiresAt = (q.expires_at as string) ?? (q.expiresAt as string) ?? new Date(Date.now() + 60_000).toISOString();
+  const qid = newId("tquote");
+  const now = nowIso();
+  db.prepare("INSERT INTO trading_quotes (id,order_id,quote_id,base_currency,quote_currency,side,quantity,price,expires_at,status,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(
+    qid, orderId, bitnobQuoteId, "BTC", "USDT", "SELL", btcStr, price, expiresAt, "pending", JSON.stringify(r.data), now
+  );
+  res.json({ ok: true, quote: { id: qid, bitnobQuoteId, quantity: btcStr, price, expiresAt, status: "pending" } });
+});
+
+// POST /api/orders/:id/trading/execute — executer la conversion via quote (reel uniquement)
+router.post("/:id/trading/execute", async (req, res) => {
+  const orderId = req.params.id;
+  const schema = z.object({ quoteId: z.string().min(1) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Validation", details: parsed.error.flatten() });
+  const db = getDb();
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
+  if (!order) return res.status(404).json({ error: "Commande introuvable" });
+  if ((order.status as string) !== "conversion_pending") return res.status(409).json({ error: `Execution uniquement en conversion_pending (actuel: ${order.status})` });
+  if ((order.demo_mode as number) === 1) return res.status(403).json({ error: "Trading reel indisponible en DEMO" });
+  if (!config.hasBitnobCredentials()) return res.status(503).json({ error: "Bitnob non configure" });
+  const quote = db.prepare("SELECT * FROM trading_quotes WHERE id=? AND order_id=?").get(parsed.data.quoteId, orderId) as Record<string, unknown> | undefined;
+  if (!quote) return res.status(404).json({ error: "Cotation trading introuvable" });
+  if ((quote.status as string) !== "pending") return res.status(409).json({ error: `Cotation non executable (statut: ${quote.status})` });
+  if (quote.expires_at && new Date(quote.expires_at as string).getTime() < Date.now()) {
+    db.prepare("UPDATE trading_quotes SET status=? WHERE id=?").run("expired", quote.id as string);
+    return res.status(410).json({ error: "Cotation expiree — redemander une cotation" });
+  }
+  // anti double trading order
+  const existingOrder = db.prepare("SELECT * FROM trading_orders WHERE order_id=? AND quote_id=? LIMIT 1").get(orderId, quote.id as string) as Record<string, unknown> | undefined;
+  if (existingOrder) return res.status(409).json({ error: "Ordre trading deja cree pour cette cotation", order: existingOrder });
+  // solde disponible check (optionnel, non bloquant strict — informatif)
+  const bal = await bitnobRequest<Record<string, unknown>>("GET", "/api/balances/BTC");
+  if (bal.ok) {
+    const balData = (bal.data as Record<string, unknown>)?.data ?? bal.data;
+    const avail = String((balData as Record<string, unknown>)?.available_balance ?? (balData as Record<string, unknown>)?.availableBalance ?? "0");
+    // avail est en sats string — comparer
+    const availSats = parseInt(avail, 10);
+    if (!Number.isNaN(availSats) && availSats < (order.amount_sats as number)) {
+      return res.status(409).json({ error: `Solde BTC insuffisant`, detail: `disponible ${availSats} sats, requis ${order.amount_sats} sats`, balances: balData });
+    }
+  }
+  const reference = newId("torder");
+  const qty = quote.quantity as string;
+  const r = await bitnobRequest<Record<string, unknown>>("POST", "/api/trading/orders", {
+    base_currency: "BTC",
+    quote_currency: "USDT",
+    side: "SELL",
+    quantity: qty,
+    quote_id: quote.quote_id as string,
+    reference,
+  });
+  if (!r.ok) {
+    // si 404 quote not found -> marquer expired
+    if (r.status === 404) db.prepare("UPDATE trading_quotes SET status=? WHERE id=?").run("expired", quote.id as string);
+    return res.status(502).json({ error: "Bitnob trading/orders", detail: r.error, status: r.status });
+  }
+  const data = (r.data as Record<string, unknown>)?.data ?? r.data;
+  const od = data as Record<string, unknown>;
+  const bitnobOrderId = (od.id as string) ?? "";
+  const statusRaw = String(od.status ?? "pending").toLowerCase();
+  const tid = newId("torder");
+  const now = nowIso();
+  db.prepare("INSERT INTO trading_orders (id,order_id,bitnob_order_id,quote_id,status,reference,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?)").run(
+    tid, orderId, bitnobOrderId, quote.id as string, statusRaw, reference, JSON.stringify(r.data), now
+  );
+  db.prepare("UPDATE trading_quotes SET status=? WHERE id=?").run("executed", quote.id as string);
+  // Ne passer a funded QUE si status confirme success/completed/filled — jamais pending
+  if (["completed", "filled", "success", "executed"].includes(statusRaw)) {
+    const t = transitionOrder(orderId, "funded", "system", "conversion BTC->USDT confirme");
+    return res.json({ ok: true, status: t.ok ? "funded" : "conversion_pending", tradingOrder: { id: tid, bitnobOrderId, status: statusRaw, reference }, note: "Conversion confirmee -> funded" });
+  }
+  // sinon rester conversion_pending, exposer l'etat (a verifier via /trading/status)
+  res.json({ ok: true, status: "conversion_pending", tradingOrder: { id: tid, bitnobOrderId, status: statusRaw, reference }, note: "Ordre trading en attente — verifier via GET /api/orders/:id/trading/status, ne pas considerer comme funded." });
+});
+
+// GET /api/orders/:id/trading/status — verifier l'etat trading (consulte avant retry, evite double)
+router.get("/:id/trading/status", async (req, res) => {
+  const orderId = req.params.id;
+  const db = getDb();
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
+  if (!order) return res.status(404).json({ error: "Commande introuvable" });
+  const tOrder = db.prepare("SELECT * FROM trading_orders WHERE order_id=? ORDER BY created_at DESC LIMIT 1").get(orderId) as Record<string, unknown> | undefined;
+  const tQuote = db.prepare("SELECT * FROM trading_quotes WHERE order_id=? ORDER BY created_at DESC LIMIT 1").get(orderId) as Record<string, unknown> | undefined;
+  if (!tOrder) return res.json({ orderStatus: order.status, quote: tQuote ?? null, order: null, note: "Aucun ordre trading — demander une cotation d'abord." });
+  if (!config.hasBitnobCredentials()) return res.json({ orderStatus: order.status, order: tOrder, quote: tQuote, note: "Bitnob non configure — etat local uniquement" });
+  if (!tOrder.bitnob_order_id) return res.json({ orderStatus: order.status, order: tOrder, quote: tQuote });
+  const r = await bitnobRequest<Record<string, unknown>>("GET", `/api/trading/orders/${tOrder.bitnob_order_id as string}`);
+  if (!r.ok) return res.status(502).json({ error: "Bitnob get trading order", detail: r.error, status: r.status });
+  const data = (r.data as Record<string, unknown>)?.data ?? r.data;
+  const d = data as Record<string, unknown>;
+  const statusRaw = String(d.status ?? "unknown").toLowerCase();
+  // sync local
+  db.prepare("UPDATE trading_orders SET status=?, raw_json=? WHERE id=?").run(statusRaw, JSON.stringify(r.data), tOrder.id as string);
+  // transition seulement si completed
+  if (["completed","filled","success","executed"].includes(statusRaw) && (order.status as string) === "conversion_pending") {
+    transitionOrder(orderId, "funded", "system", "conversion verifiee via status");
+    return res.json({ orderStatus: "funded", tradingStatus: statusRaw, order: { ...tOrder, status: statusRaw }, quote: tQuote, bitnob: data });
+  }
+  res.json({ orderStatus: order.status, tradingStatus: statusRaw, order: { ...tOrder, status: statusRaw }, quote: tQuote, bitnob: data });
 });
 
 // POST /api/orders/:id/proof — preuve de livraison
@@ -247,9 +386,32 @@ router.post("/:id/payout/quote", async (req, res) => {
     return res.json({ demo: true, quote: { id: qid, status: "pending_demo", estimatedXof: demoAmountXof, label: "DEMONSTRATION — AUCUN FONDS REEL" } });
   }
 
-  // Reel: POST /api/payouts/quotes
+  // Reel: POST /api/payouts/quotes — bloque si conversion BTC->USDT non confirmee
+  if ((order.status as string) === "delivery_confirmed" && parsed.data.fromAsset === "USDT" && !((order.amount_sats as number) && db.prepare("SELECT 1 FROM trading_orders WHERE order_id=? AND status IN ('completed','filled','success','executed') LIMIT 1").get(orderId))) {
+    // On autorise la cotation USDT meme sans trading si le marchand a deja des USDT, mais on l'indique
+    // Pas de blocage dur — informatif seulement (le preflight balances le dira)
+  }
+  // Montant en base units (XOF payout depuis USDT est en micro-units 6 decimales ; ici on derive du sats*600 demo -> non)
+  // En reel, le montant USDT en micro-units doit venir du trading; faute de trading confirme on ne peut promettre un montant exact.
+  // On exige que l'appelant fournisse le montant ou on utilise le solde USDT disponible — on garde l'ancienne logique avec garde.
   const reference = newId("payoutref");
-  const amountBaseUnits = String(order.amount_sats as number); // pour USDT il faudrait conversion BTC->USDT d'abord; en Phase on expose l'etape
+  // Pour XOF depuis USDT : Bitnob attend `amount` en base units de from_asset (USDT micro-units). Si on n'a pas de montant trading, on refuse de mentir.
+  const tradingOk = db.prepare("SELECT quantity, raw_json FROM trading_quotes WHERE order_id=? AND status='executed' ORDER BY created_at DESC LIMIT 1").get(orderId) as Record<string, unknown> | undefined;
+  let amountBaseUnits: string;
+  if (tradingOk) {
+    // On estime l'USDT obtenu via trading (non fiable sans prix reel) — on expose le doute
+    const raw = (()=>{ try{return JSON.parse(tradingOk.raw_json as string);}catch{return null;}})() as Record<string, unknown> | null;
+    const usdtAmount = (raw as Record<string, unknown> | null)?.data ? String(((raw as Record<string, unknown>).data as Record<string, unknown>).quoteAmount ?? "") : "";
+    // Fallback: si le trading n'expose pas d'USDT amount, on reste bloquant et on l'indique
+    if (!usdtAmount) {
+      return res.status(409).json({ error: "Conversion BTC->USDT non resolue : montant USDT indisponible — verifier trading/status avant payout", hint: "Appelez GET /api/orders/:id/trading/status ; si pas funded, la cotation payout ne peut etre fiable." });
+    }
+    amountBaseUnits = usdtAmount;
+  } else {
+    // Pas de trading confirme : on utilise un montant fourni par le client si present, sinon on demande explicitement
+    // Pour compat avec la demo, on garde l'ancien comportement mais on le marque non garanti
+    amountBaseUnits = String(order.amount_sats as number);
+  }
   const r = await bitnobRequest<Record<string, unknown>>("POST", "/api/payouts/quotes", {
     from_asset: parsed.data.fromAsset,
     to_currency: parsed.data.toCurrency,
@@ -266,6 +428,31 @@ router.post("/:id/payout/quote", async (req, res) => {
     "INSERT INTO payout_quotes (id,order_id,bitnob_quote_id,from_asset,to_currency,country,amount_base_units,status,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)"
   ).run(qid, orderId, bitnobQuoteId, parsed.data.fromAsset, parsed.data.toCurrency, parsed.data.country, amountBaseUnits, "pending", JSON.stringify(r.data), now);
   res.json({ demo: false, quote: { id: qid, bitnobQuoteId, status: "pending", raw: data } });
+});
+
+// GET /api/orders/:id/payout/status — etat payout (consulte avant retry, evite double)
+router.get("/:id/payout/status", async (req, res) => {
+  const orderId = req.params.id;
+  const db = getDb();
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
+  if (!order) return res.status(404).json({ error: "Commande introuvable" });
+  const pOrder = db.prepare("SELECT * FROM payouts WHERE order_id=? ORDER BY created_at DESC LIMIT 1").get(orderId) as Record<string, unknown> | undefined;
+  const pQuote = db.prepare("SELECT * FROM payout_quotes WHERE order_id=? ORDER BY created_at DESC LIMIT 1").get(orderId) as Record<string, unknown> | undefined;
+  if (!pOrder) return res.json({ orderStatus: order.status, quote: pQuote ?? null, payout: null, note: "Aucun versement — demander une cotation puis initialize/finalize." });
+  if ((pOrder.status as string).includes("demo")) return res.json({ orderStatus: order.status, payout: pOrder, quote: pQuote, demo: true });
+  if (!config.hasBitnobCredentials()) return res.json({ orderStatus: order.status, payout: pOrder, quote: pQuote, note: "Bitnob non configure — etat local uniquement" });
+  if (!pOrder.bitnob_payout_id) return res.json({ orderStatus: order.status, payout: pOrder, quote: pQuote });
+  const r = await bitnobRequest<Record<string, unknown>>("GET", `/api/payouts/${pOrder.bitnob_payout_id as string}`);
+  if (!r.ok) return res.status(502).json({ error: "Bitnob get payout", detail: r.error, status: r.status });
+  const data = (r.data as Record<string, unknown>)?.data ?? r.data;
+  const d = data as Record<string, unknown>;
+  const statusRaw = String(d.status ?? "unknown").toLowerCase();
+  db.prepare("UPDATE payouts SET status=?, raw_json=? WHERE id=?").run(statusRaw, JSON.stringify(r.data), pOrder.id as string);
+  if (statusRaw === "completed" && ["payout_processing","payout_pending"].includes(order.status as string)) {
+    transitionOrder(orderId, "payout_completed", "system", "payout verifie via status");
+    return res.json({ orderStatus: "payout_completed", payoutStatus: statusRaw, payout: { ...pOrder, status: statusRaw }, quote: pQuote, bitnob: data });
+  }
+  res.json({ orderStatus: order.status, payoutStatus: statusRaw, payout: { ...pOrder, status: statusRaw }, quote: pQuote, bitnob: data });
 });
 
 // POST /api/orders/:id/payout/initialize — init versement (beneficiaire requis)

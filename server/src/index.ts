@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -13,7 +16,10 @@ import bitnobRouter from "./routes/bitnob.js";
 dotenv.config();
 
 const app = express();
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+}));
 app.use(cors({ origin: config.corsOrigin }));
 app.use(morgan("dev"));
 app.use(express.json({ verify: rawBodySaver as unknown as Parameters<typeof express.json>[0] extends { verify?: infer V } ? V : never }));
@@ -100,12 +106,25 @@ app.post("/api/webhooks/bitnob", async (req, res) => {
   res.json({ ok: true, signatureValid: valid });
 });
 
+// Servir le frontend compile en production (client/dist) depuis le backend
+// — pas d'exposition de .env, *.db, uploads
+const thisDir = path.dirname(fileURLToPath(import.meta.url));
+const clientDist = path.resolve(thisDir, "..", "..", "client", "dist");
+if (fs.existsSync(clientDist)) {
+  app.use(express.static(clientDist, { index: false, maxAge: "1h", dotfiles: "ignore" }));
+  // SPA fallback : toute route non /api et non /health sert index.html
+  app.get(/^\/(?!api\/|health).*/, (_req, res) => {
+    const idx = path.join(clientDist, "index.html");
+    if (fs.existsSync(idx)) return res.sendFile(idx);
+    return res.status(404).json({ error: "Not found" });
+  });
+}
 app.use((_req, res) => res.status(404).json({ error: "Not found" }));
 
 const port = config.port;
 if (process.env.NODE_ENV !== "test") {
   getDb();
-  app.listen(port, () => console.log(`[sentabakh-lite] server http://localhost:${port} mode=${config.appMode}`));
+  app.listen(port, () => console.log(`[sentabakh-lite] server http://localhost:${port} mode=${config.appMode}${fs.existsSync(clientDist) ? " + static client/dist" : " (no client/dist — run npm run build)"}`));
 }
 
 export default app;

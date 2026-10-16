@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint src --ext .ts || echo \"lint: config a completer\"",
+    "lint": "eslint src",
     "preflight": "tsx scripts/preflight.ts",
     "db:migrate": "tsx src/db/migrate.ts",
     "typecheck": "tsc --noEmit"

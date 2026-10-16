@@ -21,6 +21,8 @@ build/
 .next/
 .vite/
 coverage/
+# tsc stray js (client build uses --noEmit; garde-fou si regenere)
+client/src/**/*.js
 
 # logs
 logs/

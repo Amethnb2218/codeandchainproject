@@ -1,11 +1,6 @@
 import dotenv from "dotenv";
 dotenv.config();
 
-function required(name: string): string {
-  const v = process.env[name];
-  if (!v) throw new Error(`Missing env ${name} (see .env.example)`);
-  return v;
-}
 function optional(name: string, fallback: string): string {
   return process.env[name] ?? fallback;
 }
