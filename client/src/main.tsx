@@ -234,12 +234,11 @@ function Home(){
 function NewOrder(){
   const nav = useNavigate();
   const [amountFcfa, setAmountFcfa] = React.useState(10000);
-  const [flow, setFlow] = React.useState<"qr"|"link">("qr");
   const [result, setResult] = React.useState<null | {id:string; amountFcfa:number; payUrl:string; invoice?:{bolt11:string}}>(null);
   const [err, setErr] = React.useState<string|null>(null);
   const [loading, setLoading] = React.useState(false);
   const [fixedCopied, setFixedCopied] = React.useState(false);
-  const [advanced, setAdvanced] = React.useState(false);
+  const [copied, setCopied] = React.useState<string|null>(null);
 
   const estSats = Math.max(1, Math.ceil((Number(amountFcfa)||0) * 100_000_000 / 65_000_000));
   const origin = typeof window !== "undefined" ? window.location.origin : "";
@@ -251,25 +250,30 @@ function NewOrder(){
     if(amountFcfa>10_000_000){ setErr("Maximum 10 000 000 FCFA"); return; }
     setErr(null); setLoading(true);
     try{
-      const j = await api<{id:string; quote?:unknown}>("/api/orders", { method:"POST", body: JSON.stringify({
+      // Toujours flow link (supporte QR physique + lien distance), séquestre + CODE géré côté détail si livraison
+      const j = await api<{id:string}>(`/api/orders`, { method:"POST", body: JSON.stringify({
         amountFcfa: Number(amountFcfa),
         description: "Paiement",
         sellerLabel: "Vendeur",
         beneficiaryName: "Vendeur",
         demoMode: true,
-        flow,
+        flow: "link",
       })});
       let inv: {bolt11:string} | undefined;
-      try{ const r = await api<{demo?:boolean; invoice:{bolt11:string}}>(`/api/orders/${j.id}/invoice`, {method:"POST"}); inv = r.invoice; }catch{ /* reste sans invoice */ void 0; }
+      try{ const r = await api<{demo?:boolean; invoice:{bolt11:string}}>(`/api/orders/${j.id}/invoice`, {method:"POST"}); inv = r.invoice; }catch(ex){ setErr(`Commande créée (${j.id}) mais facture: ${(ex as Error).message}`); }
       const payUrl = `${origin}/orders/${j.id}`;
       setResult({id: j.id, amountFcfa: Number(amountFcfa), payUrl, invoice: inv});
+      if(inv?.bolt11) setCopied(null);
     }catch(ex){ setErr((ex as Error).message);} finally{ setLoading(false);}
   };
 
-  const qrSrc = result?.invoice?.bolt11 ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(result.invoice.bolt11)}` : null;
+  // Même facture Lightning pour QR ET lien — pas de choix, les deux d'un coup
+  const bolt11 = result?.invoice?.bolt11 ?? "";
+  // QR fiable sans dépendance externe bloquée: on utilise qrserver + fallback texte copiable
+  const qrSrc = bolt11 ? `https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=${encodeURIComponent(bolt11)}` : null;
 
-  const copy = async (t:string)=>{
-    try{ await navigator.clipboard.writeText(t); setFixedCopied(true); setTimeout(()=>setFixedCopied(false),1500);}catch{ void 0; }
+  const copy = async (t:string, k:string)=>{
+    try{ await navigator.clipboard.writeText(t); if(k==="fixed"){ setFixedCopied(true); setTimeout(()=>setFixedCopied(false),1500);} else { setCopied(k); setTimeout(()=>setCopied(null),1500);} }catch{ void 0; }
   };
 
   return (
@@ -281,11 +285,11 @@ function NewOrder(){
           <div>
             <div className="eyebrow" style={{color:"var(--sage)"}}>Vendeur — encaissement instantané</div>
             <div style={{fontWeight:700, fontSize:18, marginTop:4}}>Ton lien fixe — à mettre sur Insta / bio / story</div>
-            <div style={{fontSize:12, opacity:.8, marginTop:4}}>Un seul lien, paiement à la demande. Le client tape le montant lui-même. Se renouvelle auto (nouvelle facture à chaque paiement).</div>
+            <div style={{fontSize:12, opacity:.8, marginTop:4}}>Un seul lien · le client tape le montant lui-même · se renouvelle auto (nouvelle facture à chaque paiement)</div>
           </div>
           <div style={{display:"flex", gap:8, alignItems:"center", background:"rgba(255,255,255,.08)", padding:"8px 10px", borderRadius:10, border:"1px solid rgba(255,255,255,.15)"}}>
             <span className="mono" style={{fontSize:12, maxWidth:240, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{fixedLink}</span>
-            <button className="btn btn-sm" style={{background:"var(--ivory)", color:"var(--forest)"}} onClick={()=>copy(fixedLink)}>{fixedCopied ? "Copié ✓" : "Copier lien"}</button>
+            <button className="btn btn-sm" style={{background:"var(--ivory)", color:"var(--forest)"}} onClick={()=>copy(fixedLink,"fixed")}>{fixedCopied ? "Copié ✓" : "Copier lien"}</button>
           </div>
         </div>
       </div>
@@ -295,7 +299,7 @@ function NewOrder(){
           <div>
             <div className="eyebrow">En 1 geste</div>
             <h1 className="brand" style={{margin:"6px 0 6px", fontSize:26, color:"var(--forest)", letterSpacing:"-0.03em"}}>Recevoir</h1>
-            <p style={{margin:0, color:"var(--ink-60)", fontSize:13}}>Tape le montant en <strong>FCFA</strong> → <strong>Recevoir</strong> → QR + lien instantanés. Le client scanne ou ouvre le lien, paie en Lightning, tu vois <strong>REÇU</strong>.</p>
+            <p style={{margin:0, color:"var(--ink-60)", fontSize:13}}>Tape le montant en <strong>FCFA</strong> → <strong>Recevoir</strong>. Tu obtiens <strong>automatiquement QR + lien</strong> (même facture Lightning) : QR pour le client en face, lien pour le client à distance.</p>
           </div>
 
           <label className="field">
@@ -307,20 +311,13 @@ function NewOrder(){
             </span>
           </label>
 
-          <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
-            <button type="button" onClick={()=>setFlow("qr")} className="btn" style={{flex:"1 1 160px", justifyContent:"center", background: flow==="qr" ? "#EAF6EC" : undefined, borderColor: flow==="qr" ? "var(--ok)" : undefined, fontWeight:700}}>{flow==="qr" ? "● " : ""}QR — Boutique (10 s)</button>
-            <button type="button" onClick={()=>setFlow("link")} className="btn" style={{flex:"1 1 160px", justifyContent:"center", background: flow==="link" ? "#FFF1E6" : undefined, borderColor: flow==="link" ? "#f97316" : undefined, fontWeight:700}}>{flow==="link" ? "● " : ""}LIEN — Livraison (séquestré + CODE)</button>
-          </div>
-
           {err && <div className="error">{err}</div>}
 
           <button className="btn btn-coral" disabled={loading} style={{justifyContent:"center", height:50, fontSize:16, fontWeight:800}}>
             {loading ? "Génération…" : "Recevoir — QR + Lien"} <IcoArrow/>
           </button>
 
-          <button type="button" onClick={()=>setAdvanced(v=>!v)} className="btn btn-sm" style={{justifyContent:"center", background:"transparent", borderColor:"var(--line)", color:"var(--ink-60)"}}>{advanced ? "Masquer options" : "Options (description, vendeur…)"}</button>
-          {advanced && <div className="notice" style={{fontSize:12, lineHeight:1.6}}>Par défaut : description “Paiement”, vendeur “Vendeur”. Pour personnaliser, ouvre la commande après génération → tu peux éditer et ajouter un bénéficiaire. Flux B : seul VENDEUR a un compte, CLIENT/LIVREUR jamais.</div>}
-          <div style={{fontSize:11, color:"var(--ink-40)"}}>VENDEUR seul · pas de compte client/livreur · Flux A fin directe · Flux B CODE 6ch 2min/3 essais persisté</div>
+          <div style={{fontSize:11, color:"var(--ink-40)"}}>Même facture Lightning pour QR et lien · pas de choix à faire · VENDEUR seul (CLIENT/LIVREUR sans compte)</div>
         </form>
 
         <div style={{display:"grid", gap:12, alignContent:"start"}}>
@@ -340,21 +337,29 @@ function NewOrder(){
                 <div className="section-title" style={{color:"var(--ok)"}}><IcoCheck/> Prêt à encaisser — {result.amountFcfa.toLocaleString("fr-FR")} FCFA</div>
                 <div className="section-rule"/>
                 <div style={{display:"grid", gap:10}}>
-                  <div style={{display:"grid", placeItems:"center", background:"#fff", borderRadius:12, padding:12, border:"1px solid var(--line)"}}>
-                    {qrSrc ? <img src={qrSrc} alt="QR Lightning" width={220} height={220} style={{borderRadius:8}}/> : <div className="mono" style={{fontSize:11, wordBreak:"break-all", padding:8}}>{result.invoice?.bolt11 ?? "Facture en génération…"}</div>}
-                    <div style={{fontSize:11, color:"var(--ink-60)", marginTop:6}}>{flow==="qr" ? "QR — le client scanne (10 s boutique) · pas de CODE" : "QR du lien — séquestré → CODE après J'ai bien reçu"}</div>
-                  </div>
-                  <label className="field"><span className="field-label">Lien de paiement (à donner / copier)</span>
-                    <div style={{display:"flex", gap:8}}>
-                      <input className="input mono" value={result.payUrl} readOnly style={{fontSize:12}}/>
-                      <button type="button" className="btn btn-sm" onClick={async()=>{ try{ await navigator.clipboard.writeText(result.payUrl);}catch{ void 0; }}}><IcoCopy/> Copier</button>
+                  <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
+                    <div style={{display:"grid", placeItems:"center", background:"#fff", borderRadius:12, padding:10, border:"1px solid var(--line)"}}>
+                      {qrSrc ? <img src={qrSrc} alt="QR Lightning" width={220} height={220} style={{borderRadius:8}} onError={(e)=>{ (e.target as HTMLImageElement).style.display="none"; }}/> : null}
+                      {!qrSrc && <div className="mono" style={{fontSize:11, wordBreak:"break-all", padding:8, textAlign:"center"}}>{bolt11 ? bolt11.slice(0,48)+"…" : "Facture en génération…"}</div>}
+                      <div className="mono" style={{marginTop:6, fontSize:11, wordBreak:"break-all", background:"#FFF1E6", padding:"6px 8px", borderRadius:8, width:"100%", textAlign:"center"}}>{bolt11 ? bolt11.slice(0,36)+"…"+bolt11.slice(-8) : "—"}</div>
+                      <button type="button" className="btn btn-sm" style={{marginTop:6}} onClick={()=>copy(bolt11,"bolt11")}>{copied==="bolt11" ? "Copié ✓" : <><IcoCopy/> Copier code</>}</button>
+                      <div style={{fontSize:11, color:"var(--forest)", fontWeight:700, marginTop:6}}>QR — pour paiement physique (scan en boutique)</div>
                     </div>
-                    <span className="field-hint">Envoie par WhatsApp / colle en bio Insta — le client ouvre et paie (même facture Lightning).</span>
-                  </label>
-                  <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
-                    <a className="btn btn-coral" href={result.payUrl} target="_blank" rel="noreferrer">Ouvrir le lien <IcoArrow/></a>
-                    <button type="button" className="btn" onClick={()=>nav(`/orders/${result.id}`)}>Voir la commande →</button>
-                    <button type="button" className="btn" onClick={()=>{ setResult(null); setAmountFcfa(10000); }}>Nouveau montant</button>
+                    <div style={{display:"grid", gap:8, alignContent:"start"}}>
+                      <label className="field"><span className="field-label" style={{fontWeight:700, color:"var(--forest)"}}>Lien — pour paiement à distance</span>
+                        <input className="input mono" value={result.payUrl} readOnly style={{fontSize:12}}/>
+                        <div style={{display:"flex", gap:6, marginTop:6}}>
+                          <button type="button" className="btn btn-sm" style={{flex:1, justifyContent:"center"}} onClick={()=>copy(result.payUrl,"payUrl")}>{copied==="payUrl" ? "Copié ✓" : <><IcoCopy/> Copier lien</>}</button>
+                          <a className="btn btn-sm" style={{flex:1, justifyContent:"center"}} href={result.payUrl} target="_blank" rel="noreferrer">Ouvrir</a>
+                        </div>
+                        <span className="field-hint">WhatsApp / Insta / SMS — même facture que le QR, le client paie à distance</span>
+                      </label>
+                      <div className="notice" style={{fontSize:11}}>Même facture Lightning pour QR et lien. Client en face → scan QR. Client loin → ouvre le lien.</div>
+                      <div style={{display:"flex", gap:6, flexWrap:"wrap"}}>
+                        <button type="button" className="btn btn-sm" onClick={()=>nav(`/orders/${result.id}`)}>Voir la commande →</button>
+                        <button type="button" className="btn btn-sm" onClick={()=>{ setResult(null); setAmountFcfa(10000); }}>Nouveau montant</button>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -704,6 +709,100 @@ function OrderDetail(){
   );
 }
 
+/* ---------- Pay (lien fixe vendeur — client) ---------- */
+function PayPage(){
+  const {slug} = useParams();
+  const [amount, setAmount] = React.useState(10000);
+  const [err, setErr] = React.useState<string|null>(null);
+  const [loading, setLoading] = React.useState(false);
+  const [invoice, setInvoice] = React.useState<{bolt11:string; payUrl?:string} | null>(null);
+  const [orderId, setOrderId] = React.useState<string|null>(null);
+  const [phase, setPhase] = React.useState<"input"|"invoice"|"paid">("input");
+  const displaySlug = slug ?? "vendeur";
+  const nice = displaySlug.charAt(0).toUpperCase()+displaySlug.slice(1);
+  const estSats = Math.max(1, Math.ceil((Number(amount)||0) * 100_000_000 / 65_000_000));
+  const qrSrc = invoice?.bolt11 ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(invoice.bolt11)}` : null;
+
+  const payer = async (e:React.FormEvent)=>{
+    e.preventDefault();
+    if(!amount || amount<500){ setErr("Minimum 500 FCFA"); return; }
+    if(amount>10_000_000){ setErr("Maximum 10 000 000 FCFA"); return; }
+    setErr(null); setLoading(true);
+    try{
+      const j = await api<{id:string}>(`/api/orders`, {method:"POST", body: JSON.stringify({amountFcfa: Number(amount), description: `Paiement ${nice}`, sellerLabel: nice, beneficiaryName: nice, demoMode:true, flow:"qr"})});
+      const r = await api<{invoice:{bolt11:string}}>(`/api/orders/${j.id}/invoice`, {method:"POST"});
+      setOrderId(j.id); setInvoice(r.invoice); setPhase("invoice");
+    }catch(ex){ setErr((ex as Error).message); } finally{ setLoading(false); }
+  };
+
+  // Poll: si payé → phase paid (DEMO: on peut simuler via bouton)
+  React.useEffect(()=>{
+    if(phase!=="invoice" || !orderId) return;
+    const t = setInterval(async()=>{
+      try{ const j = await api<Record<string,unknown>>(`/api/orders/${orderId}`); if(String((j.order as Record<string,unknown>).status)!=="awaiting_payment") setPhase("paid"); }catch{ void 0; }
+    }, 2500);
+    return ()=>clearInterval(t);
+  },[phase, orderId]);
+
+  return (
+    <div className="page" style={{maxWidth:520, margin:"0 auto"}}>
+      <div className="panel panel-pad" style={{textAlign:"center", background:"var(--forest)", color:"var(--ivory)", borderColor:"rgba(255,255,255,.12)"}}>
+        <div style={{width:56, height:56, borderRadius:14, background:"var(--ivory)", color:"var(--forest)", display:"grid", placeItems:"center", margin:"0 auto"}}><IcoWallet/></div>
+        <div style={{fontWeight:800, fontSize:20, marginTop:10}}>Payer {nice}</div>
+        <div style={{opacity:.85, fontSize:12, marginTop:4}}>Sentabakh Lite · Lightning ⚡ · sans compte · 2 min</div>
+      </div>
+
+      {phase==="input" && (
+        <form onSubmit={payer} className="panel panel-pad" style={{marginTop:14, display:"grid", gap:14}}>
+          <div style={{textAlign:"center"}}>
+            <div className="eyebrow">Client — choisis ton montant</div>
+            <div style={{fontWeight:700, color:"var(--forest)", marginTop:4}}>Combien tu veux payer ?</div>
+          </div>
+          <label className="field">
+            <span className="field-label" style={{fontWeight:700}}>Montant (FCFA)</span>
+            <input type="number" className="input" value={amount} onChange={e=>setAmount(Number(e.target.value))} min={500} max={10_000_000} required autoFocus inputMode="numeric" style={{fontSize:24, fontWeight:800, height:54, textAlign:"center"}} placeholder="10 000"/>
+            <span className="field-hint" style={{textAlign:"center", display:"block"}}>{Number(amount).toLocaleString("fr-FR")} FCFA ≈ {estSats.toLocaleString("fr-FR")} sats</span>
+            <span style={{display:"flex", gap:6, justifyContent:"center", marginTop:8, flexWrap:"wrap"}}>
+              {[1000,5000,10000,25000].map(v=> <button key={v} type="button" className="btn btn-sm" style={{background: amount===v ? "var(--forest)":undefined, color: amount===v?"var(--ivory)":undefined}} onClick={()=>setAmount(v)}>{v.toLocaleString("fr-FR")}</button>)}
+            </span>
+          </label>
+          {err && <div className="error">{err}</div>}
+          <button className="btn btn-coral" disabled={loading} style={{justifyContent:"center", height:50, fontSize:16, fontWeight:800}}>{loading?"Génération…":"Payer ⚡"} <IcoArrow/></button>
+          <div style={{fontSize:11, color:"var(--ink-40)", textAlign:"center"}}>Facture Lightning instantanée · taux serveur verrouillé 2 min · pas de données perso requises</div>
+        </form>
+      )}
+
+      {phase==="invoice" && invoice && (
+        <div className="panel panel-pad" style={{marginTop:14, display:"grid", gap:12}}>
+          <div style={{textAlign:"center"}}>
+            <div className="badge" style={{background:"var(--ok)", color:"#fff"}}>⚡ Facture prête — {Number(amount).toLocaleString("fr-FR")} FCFA</div>
+            <div style={{fontSize:11, color:"var(--ink-60)", marginTop:6}}>Scan QR ou copie le code Bolt11</div>
+          </div>
+          <div style={{display:"grid", placeItems:"center", background:"#fff", border:"1px solid var(--line)", borderRadius:12, padding:12}}>
+            {qrSrc ? <img src={qrSrc} alt="QR Lightning" width={220} height={220} style={{borderRadius:8}}/> : <div className="mono" style={{fontSize:11, wordBreak:"break-all"}}>{invoice.bolt11}</div>}
+          </div>
+          <div className="mono" style={{fontSize:11, wordBreak:"break-all", background:"#FFF1E6", padding:8, borderRadius:8, border:"1px solid #FFC9A8"}}>{invoice.bolt11}</div>
+          <div style={{display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap"}}>
+            <button className="btn" onClick={async()=>{ try{ await navigator.clipboard.writeText(invoice.bolt11);}catch{ void 0; }}}><IcoCopy/> Copier code</button>
+            {orderId && <button className="btn" onClick={async()=>{ try{ await api(`/api/orders/${orderId}/demo/confirm-payment`, {method:"POST"}); setPhase("paid"); }catch(ex){ setErr((ex as Error).message); }}}>Simuler paiement (DEMO)</button>}
+          </div>
+          <div className="notice" style={{fontSize:12, textAlign:"center"}}>Après paiement, le vendeur voit <strong>REÇU</strong> instantanément. Lien se renouvelle tout seul à chaque paiement (nouvelle facture).</div>
+          <button className="btn btn-sm" style={{justifyContent:"center"}} onClick={()=>{ setPhase("input"); setInvoice(null); setOrderId(null); }}>← Nouveau paiement</button>
+          {err && <div className="error">{err}</div>}
+        </div>
+      )}
+
+      {phase==="paid" && (
+        <div className="panel panel-pad" style={{marginTop:14, textAlign:"center", background:"#EAF6EC", borderColor:"var(--ok)"}}>
+          <div style={{fontWeight:800, color:"var(--ok)", fontSize:18}}>✅ Paiement reçu !</div>
+          <div style={{fontSize:13, color:"var(--ink-60)", marginTop:6}}>{Number(amount).toLocaleString("fr-FR")} FCFA · Merci — ton paiement est confirmé.</div>
+          <button className="btn btn-coral" style={{marginTop:12, justifyContent:"center"}} onClick={()=>{ setPhase("input"); setInvoice(null); setOrderId(null); }}>Payer à nouveau</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ---------- Health ---------- */
 function Health(){
   const [data, setData] = React.useState<Record<string,unknown>|null>(null);
@@ -759,6 +858,8 @@ function App(){
       <Routes>
         <Route path="/" element={<Home/>}/>
         <Route path="/new" element={<NewOrder/>}/>
+        <Route path="/pay" element={<PayPage/>}/>
+        <Route path="/pay/:slug" element={<PayPage/>}/>
         <Route path="/orders/:id" element={<OrderDetail/>}/>
         <Route path="/health" element={<Health/>}/>
       </Routes>
