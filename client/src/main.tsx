@@ -88,7 +88,7 @@ function SiteHeader(){
         </Link>
         <nav className="nav" aria-label="Navigation principale">
           <NavLink to="/" end>Commandes</NavLink>
-          <NavLink to="/new" className="nav-cta">Nouvelle commande</NavLink>
+          <NavLink to="/new" className="nav-cta">Recevoir</NavLink>
           <NavLink to="/health">Santé</NavLink>
         </nav>
       </div>
@@ -144,7 +144,7 @@ function Home(){
           <h1 className="hero-title">Encaissez en Bitcoin Lightning.<br/>Livrez. Versez en XOF.</h1>
           <p className="hero-lead">Sentabakh Lite relie le paiement Lightning, la preuve de livraison et le versement mobile money/bancaire via Bitnob — avec un parcours démo de bout en bout, traçable et réversible, sans mélanger simulation et réel.</p>
           <div className="hero-actions">
-            <Link to="/new" className="btn btn-coral"><IcoPlus/> Nouvelle commande</Link>
+            <Link to="/new" className="btn btn-coral"><IcoPlus/> Recevoir</Link>
             <Link to="/health" className="btn btn-ghost"><IcoShield/> Vérifier l’intégration</Link>
           </div>
           <div className="notice" style={{marginTop:12}}>
@@ -202,7 +202,7 @@ function Home(){
           <div className="panel-pad notice notice-strong" style={{display:"grid", gap:10}}>
             <div style={{fontWeight:700, color:"var(--forest)"}}>{orders.length===0 ? "Aucune commande pour l’instant" : "Aucun résultat"}</div>
             <div style={{fontSize:13, color:"var(--ink-60)"}}>{orders.length===0 ? "Créez votre première commande pour lancer le parcours démo de 3 minutes." : "Essayez une autre recherche ou effacez les filtres."}</div>
-            {orders.length===0 && <div><Link to="/new" className="btn btn-coral"><IcoPlus/> Nouvelle commande</Link></div>}
+            {orders.length===0 && <div><Link to="/new" className="btn btn-coral"><IcoPlus/> Recevoir</Link></div>}
           </div>
         ) : (
           <div className="table-wrap">
@@ -233,118 +233,139 @@ function Home(){
 /* ---------- New order ---------- */
 function NewOrder(){
   const nav = useNavigate();
-  // VENDEUR tape en FCFA (graphe: 10 000 FCFA → serveur convertit 15 651 sats, taux Bitnob verrouillé 2min)
-  const [form, setForm] = React.useState({ amountFcfa: 25000, description: "Commande riz 25kg — Dakar", sellerLabel: "Mareyeus Aliou", beneficiaryName: "Aminata Diallo", beneficiaryPhoneHint: "771234567", demoMode: true, flow: "link" as "qr"|"link"|"delivery" });
+  const [amountFcfa, setAmountFcfa] = React.useState(10000);
+  const [flow, setFlow] = React.useState<"qr"|"link">("qr");
+  const [result, setResult] = React.useState<null | {id:string; amountFcfa:number; payUrl:string; invoice?:{bolt11:string}}>(null);
   const [err, setErr] = React.useState<string|null>(null);
-  const [fieldErr, setFieldErr] = React.useState<Record<string,string>>({});
   const [loading, setLoading] = React.useState(false);
+  const [fixedCopied, setFixedCopied] = React.useState(false);
+  const [advanced, setAdvanced] = React.useState(false);
 
-  const validate = ()=>{
-    const e:Record<string,string>={};
-    if(!form.amountFcfa || form.amountFcfa<500) e.amountFcfa="Minimum 500 FCFA";
-    if(form.amountFcfa>10_000_000) e.amountFcfa="Maximum 10 000 000 FCFA";
-    if(form.description.trim().length<3) e.description="Description trop courte";
-    if(form.sellerLabel.trim().length<2) e.sellerLabel="Nom du vendeur requis";
-    if(form.beneficiaryName.trim().length<2) e.beneficiaryName="Bénéficiaire requis";
-    setFieldErr(e); return Object.keys(e).length===0;
-  };
+  const estSats = Math.max(1, Math.ceil((Number(amountFcfa)||0) * 100_000_000 / 65_000_000));
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const fixedLink = `${origin}/pay/aliou`;
 
-  const submit = async (e:React.FormEvent)=>{
-    e.preventDefault(); setErr(null);
-    if(!validate()) return;
-    setLoading(true);
+  const recevoir = async (e?:React.FormEvent)=>{
+    if(e) e.preventDefault();
+    if(!amountFcfa || amountFcfa<500){ setErr("Minimum 500 FCFA"); return; }
+    if(amountFcfa>10_000_000){ setErr("Maximum 10 000 000 FCFA"); return; }
+    setErr(null); setLoading(true);
     try{
-      const j = await api<{id:string}>("/api/orders", { method:"POST", body: JSON.stringify({ amountFcfa: Number(form.amountFcfa), description: form.description, sellerLabel: form.sellerLabel, beneficiaryName: form.beneficiaryName, beneficiaryPhoneHint: form.beneficiaryPhoneHint, demoMode: form.demoMode, flow: form.flow }) });
-      nav(`/orders/${j.id}`);
+      const j = await api<{id:string; quote?:unknown}>("/api/orders", { method:"POST", body: JSON.stringify({
+        amountFcfa: Number(amountFcfa),
+        description: "Paiement",
+        sellerLabel: "Vendeur",
+        beneficiaryName: "Vendeur",
+        demoMode: true,
+        flow,
+      })});
+      let inv: {bolt11:string} | undefined;
+      try{ const r = await api<{demo?:boolean; invoice:{bolt11:string}}>(`/api/orders/${j.id}/invoice`, {method:"POST"}); inv = r.invoice; }catch{ /* reste sans invoice */ void 0; }
+      const payUrl = `${origin}/orders/${j.id}`;
+      setResult({id: j.id, amountFcfa: Number(amountFcfa), payUrl, invoice: inv});
     }catch(ex){ setErr((ex as Error).message);} finally{ setLoading(false);}
   };
 
-  // Estimation locale: 65M XOF/BTC → 10 000 FCFA ≈ 15 385 sats (affichage; le serveur fixe le vrai taux 2min)
-  const estSats = Math.max(1, Math.ceil((Number(form.amountFcfa)||0) * 100_000_000 / 65_000_000));
-  const btc = satsToBtc(estSats);
+  const qrSrc = result?.invoice?.bolt11 ? `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(result.invoice.bolt11)}` : null;
+
+  const copy = async (t:string)=>{
+    try{ await navigator.clipboard.writeText(t); setFixedCopied(true); setTimeout(()=>setFixedCopied(false),1500);}catch{ void 0; }
+  };
 
   return (
     <div className="page" style={{maxWidth:980}}>
-      <div className="crumbs" style={{marginBottom:12}}><Link to="/">← Commandes</Link><span aria-hidden>·</span><span>Nouvelle commande</span></div>
-      <div style={{display:"grid", gridTemplateColumns:"1.2fr .8fr", gap:18}} className="new-grid">
-        <form onSubmit={submit} className="panel panel-pad" style={{display:"grid", gap:16}}>
+      <div className="crumbs" style={{marginBottom:12}}><Link to="/">← Commandes</Link><span aria-hidden>·</span><span>Recevoir</span></div>
+
+      <div className="panel panel-pad" style={{background:"var(--forest)", color:"var(--ivory)", borderColor:"rgba(245,241,232,.12)", marginBottom:14}}>
+        <div style={{display:"flex", justifyContent:"space-between", gap:16, flexWrap:"wrap", alignItems:"center"}}>
           <div>
-            <div className="eyebrow">Création guidée</div>
-            <h1 className="brand" style={{margin:"6px 0 6px", fontSize:26, color:"var(--forest)", letterSpacing:"-0.03em"}}>Nouvelle commande</h1>
-            <p style={{margin:0, color:"var(--ink-60)", fontSize:13}}>Renseignez le montant en sats (1 BTC = 100 000 000 sats), l’objet et les acteurs. La commande démarre en <em>En attente de paiement</em>.</p>
+            <div className="eyebrow" style={{color:"var(--sage)"}}>Vendeur — encaissement instantané</div>
+            <div style={{fontWeight:700, fontSize:18, marginTop:4}}>Ton lien fixe — à mettre sur Insta / bio / story</div>
+            <div style={{fontSize:12, opacity:.8, marginTop:4}}>Un seul lien, paiement à la demande. Le client tape le montant lui-même. Se renouvelle auto (nouvelle facture à chaque paiement).</div>
+          </div>
+          <div style={{display:"flex", gap:8, alignItems:"center", background:"rgba(255,255,255,.08)", padding:"8px 10px", borderRadius:10, border:"1px solid rgba(255,255,255,.15)"}}>
+            <span className="mono" style={{fontSize:12, maxWidth:240, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap"}}>{fixedLink}</span>
+            <button className="btn btn-sm" style={{background:"var(--ivory)", color:"var(--forest)"}} onClick={()=>copy(fixedLink)}>{fixedCopied ? "Copié ✓" : "Copier lien"}</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="new-grid" style={{display:"grid", gridTemplateColumns: result ? "1fr 1fr" : "1.15fr .85fr", gap:18}}>
+        <form onSubmit={recevoir} className="panel panel-pad" style={{display:"grid", gap:14, alignContent:"start"}}>
+          <div>
+            <div className="eyebrow">En 1 geste</div>
+            <h1 className="brand" style={{margin:"6px 0 6px", fontSize:26, color:"var(--forest)", letterSpacing:"-0.03em"}}>Recevoir</h1>
+            <p style={{margin:0, color:"var(--ink-60)", fontSize:13}}>Tape le montant en <strong>FCFA</strong> → <strong>Recevoir</strong> → QR + lien instantanés. Le client scanne ou ouvre le lien, paie en Lightning, tu vois <strong>REÇU</strong>.</p>
           </div>
 
-          <div className="section-title" style={{marginTop:4}}><span style={{width:8,height:8,borderRadius:4,background:"var(--coral)",display:"inline-block"}}/> Montant & objet — VENDEUR tape en FCFA (serveur convertit en sats)</div>
-          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
-            <label className="field"><span className="field-label">Montant (FCFA) *</span>
-              <input className="input" type="number" value={form.amountFcfa} onChange={e=>setForm({...form, amountFcfa: Number(e.target.value)})} min={500} max={10_000_000} required aria-describedby="hint-amount"/>
-              <span id="hint-amount" className="field-hint">{Number(form.amountFcfa).toLocaleString("fr-FR")} FCFA ≈ {estSats.toLocaleString("fr-FR")} sats ≈ {btc} BTC · taux Bitnob verrouillé 2 min (serveur)</span>
-              {fieldErr.amountFcfa && <span className="error" style={{padding:"6px 10px"}}>{fieldErr.amountFcfa}</span>}
-            </label>
-            <label className="field"><span className="field-label">Description *</span>
-              <input className="input" value={form.description} onChange={e=>setForm({...form, description:e.target.value})} required placeholder="Ex. Riz 25kg — lot 3"/>
-              {fieldErr.description && <span className="error" style={{padding:"6px 10px"}}>{fieldErr.description}</span>}
-            </label>
-          </div>
-          <div className="section-title" style={{marginTop:4}}>Choix VENDEUR — graphe: QR CODE (boutique) vs LIEN WhatsApp (livraison)</div>
-          <div style={{display:"flex", gap:10, flexWrap:"wrap"}}>
-            <label className="check" style={{flex:"1 1 200px", border:"1px solid var(--line)", borderRadius:10, padding:"10px 12px", background: form.flow==="qr" ? "#EAF6EC" : undefined}}><input type="radio" name="flow" checked={form.flow==="qr"} onChange={()=>setForm({...form, flow:"qr"})}/> <span><strong>QR CODE — Boutique</strong><br/><span style={{fontSize:11, color:"var(--ink-60)"}}>10 s · scan sur place · pas de code · fin directe</span></span></label>
-            <label className="check" style={{flex:"1 1 200px", border:"1px solid var(--line)", borderRadius:10, padding:"10px 12px", background: form.flow==="link" ? "#FFF1E6" : undefined}}><input type="radio" name="flow" checked={form.flow==="link"} onChange={()=>setForm({...form, flow:"link"})}/> <span><strong>LIEN WhatsApp — Livraison</strong><br/><span style={{fontSize:11, color:"var(--ink-60)"}}>Séquestré → CODE 6ch (2min/3 essais, persisté)</span></span></label>
-          </div>
-
-          <div className="section-title"><IcoTruck/> Acteurs</div>
-          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
-            <label className="field"><span className="field-label">Vendeur *</span>
-              <input className="input" value={form.sellerLabel} onChange={e=>setForm({...form, sellerLabel:e.target.value})} required />
-              {fieldErr.sellerLabel && <span className="error" style={{padding:"6px 10px"}}>{fieldErr.sellerLabel}</span>}
-            </label>
-            <label className="field"><span className="field-label">Bénéficiaire du versement *</span>
-              <input className="input" value={form.beneficiaryName} onChange={e=>setForm({...form, beneficiaryName:e.target.value})} required />
-              {fieldErr.beneficiaryName && <span className="error" style={{padding:"6px 10px"}}>{fieldErr.beneficiaryName}</span>}
-            </label>
-          </div>
-          <label className="field"><span className="field-label">Téléphone (indice, optionnel)</span>
-            <input className="input" value={form.beneficiaryPhoneHint} onChange={e=>setForm({...form, beneficiaryPhoneHint:e.target.value})} placeholder="Ex. 771234567 — pour pré-remplir le versement" />
-            <span className="field-hint">Utilisé pour pré-remplir le bénéficiaire du payout. Aucun SMS envoyé en DEMO.</span>
-          </label>
-
-          <div className="section-title"><IcoShield/> Mode</div>
-          <label className="check">
-            <input type="checkbox" checked={form.demoMode} onChange={e=>setForm({...form, demoMode:e.target.checked})} style={{marginTop:2}}/>
-            <span style={{display:"grid", gap:2}}>
-              <strong style={{fontSize:13}}>Mode démonstration (recommandé sans clés Bitnob)</strong>
-              <span style={{fontSize:12, color:"var(--ink-60)"}}>Facture <span className="mono">DEMO_NO_FUNDS</span>, statuts <span className="mono">*_demo</span>, cotation estimée — jamais présenté comme réel. Décochez pour tenter une facture Bitnob réelle (nécessite <span className="mono">BITNOB_CLIENT_ID/SECRET</span>).</span>
+          <label className="field">
+            <span className="field-label" style={{fontSize:14, fontWeight:700}}>Montant (FCFA) *</span>
+            <input className="input" type="number" value={amountFcfa} onChange={e=>setAmountFcfa(Number(e.target.value))} min={500} max={10_000_000} required autoFocus inputMode="numeric" style={{fontSize:22, fontWeight:700, height:52, letterSpacing:"-0.02em"}} placeholder="10 000"/>
+            <span className="field-hint" style={{fontSize:12}}><strong>{Number(amountFcfa).toLocaleString("fr-FR")} FCFA</strong> ≈ {estSats.toLocaleString("fr-FR")} sats · taux Bitnob verrouillé 2 min (serveur)</span>
+            <span style={{display:"flex", gap:6, marginTop:8, flexWrap:"wrap"}}>
+              {[5000,10000,25000,50000].map(v=> <button key={v} type="button" className="btn btn-sm" style={{background: amountFcfa===v ? "var(--forest)":undefined, color: amountFcfa===v ? "var(--ivory)":undefined}} onClick={()=>setAmountFcfa(v)}>{v.toLocaleString("fr-FR")} FCFA</button>)}
             </span>
           </label>
 
+          <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
+            <button type="button" onClick={()=>setFlow("qr")} className="btn" style={{flex:"1 1 160px", justifyContent:"center", background: flow==="qr" ? "#EAF6EC" : undefined, borderColor: flow==="qr" ? "var(--ok)" : undefined, fontWeight:700}}>{flow==="qr" ? "● " : ""}QR — Boutique (10 s)</button>
+            <button type="button" onClick={()=>setFlow("link")} className="btn" style={{flex:"1 1 160px", justifyContent:"center", background: flow==="link" ? "#FFF1E6" : undefined, borderColor: flow==="link" ? "#f97316" : undefined, fontWeight:700}}>{flow==="link" ? "● " : ""}LIEN — Livraison (séquestré + CODE)</button>
+          </div>
+
           {err && <div className="error">{err}</div>}
-          <button className="btn btn-coral" disabled={loading} style={{justifyContent:"center"}}>
-            {loading ? "Création…" : "Créer la commande"} <IcoArrow/>
+
+          <button className="btn btn-coral" disabled={loading} style={{justifyContent:"center", height:50, fontSize:16, fontWeight:800}}>
+            {loading ? "Génération…" : "Recevoir — QR + Lien"} <IcoArrow/>
           </button>
-          <div style={{fontSize:11, color:"var(--ink-40)"}}>* Champs obligatoires. Validation Zod côté serveur conservée.</div>
+
+          <button type="button" onClick={()=>setAdvanced(v=>!v)} className="btn btn-sm" style={{justifyContent:"center", background:"transparent", borderColor:"var(--line)", color:"var(--ink-60)"}}>{advanced ? "Masquer options" : "Options (description, vendeur…)"}</button>
+          {advanced && <div className="notice" style={{fontSize:12, lineHeight:1.6}}>Par défaut : description “Paiement”, vendeur “Vendeur”. Pour personnaliser, ouvre la commande après génération → tu peux éditer et ajouter un bénéficiaire. Flux B : seul VENDEUR a un compte, CLIENT/LIVREUR jamais.</div>}
+          <div style={{fontSize:11, color:"var(--ink-40)"}}>VENDEUR seul · pas de compte client/livreur · Flux A fin directe · Flux B CODE 6ch 2min/3 essais persisté</div>
         </form>
 
         <div style={{display:"grid", gap:12, alignContent:"start"}}>
-          <div className="panel panel-pad" style={{background:"var(--forest)", color:"var(--ivory)", borderColor:"rgba(245,241,232,.12)"}}>
-            <div className="eyebrow" style={{color:"var(--sage)"}}>Prévisualisation</div>
-            <div style={{fontFamily:"Space Grotesk, sans-serif", fontWeight:700, fontSize:18, marginTop:6}}>{form.description || "—"}</div>
-            <div style={{display:"grid", gap:8, marginTop:12}}>
-              <div className="kv"><span className="kv-k">Montant</span><span className="kv-v"><strong>{Number(form.amountFcfa).toLocaleString("fr-FR")} FCFA</strong> <span style={{opacity:.7}}>≈ {estSats.toLocaleString("fr-FR")} sats · {btc} BTC</span> <span className="badge" style={{fontSize:10, marginLeft:6}}>{form.flow==="qr" ? "QR · 10s" : "LIEN · séquestré"}</span></span></div>
-              <div className="kv"><span className="kv-k">Vendeur</span><span className="kv-v">{form.sellerLabel||"—"}</span></div>
-              <div className="kv"><span className="kv-k">Bénéficiaire</span><span className="kv-v">{form.beneficiaryName||"—"} {form.beneficiaryPhoneHint && <span style={{opacity:.7}}>· {form.beneficiaryPhoneHint}</span>}</span></div>
-              <div className="kv"><span className="kv-k">Mode</span><span className="kv-v">{form.demoMode ? <span className="badge badge-demo" style={{fontSize:11}}>DEMO — AUCUN FONDS RÉEL</span> : <span className="badge" style={{background:"var(--paper)", color:"var(--forest)"}}>SANDBOX — test réel</span>}</span></div>
+          {!result ? (
+            <div className="panel panel-pad" style={{borderStyle:"dashed"}}>
+              <div className="eyebrow">Aperçu instantané</div>
+              <div style={{fontWeight:700, color:"var(--forest)", marginTop:6}}>Tape un montant puis <em>Recevoir</em></div>
+              <div style={{marginTop:10, display:"grid", placeItems:"center", border:"1px dashed var(--line)", borderRadius:12, padding:22, background:"#FFFDF7"}}>
+                <div style={{width:160, height:160, border:"2px dashed var(--line)", borderRadius:12, display:"grid", placeItems:"center", color:"var(--ink-40)", fontSize:12}}>QR apparaîtra ici</div>
+                <div className="mono" style={{marginTop:10, fontSize:11, color:"var(--ink-40)"}}>lien apparaîtra ici</div>
+              </div>
+              <div className="notice" style={{marginTop:10, fontSize:12}}>Après clic : QR Lightning scannable + lien <span className="mono">/orders/…</span> copiable (WhatsApp / Insta). Client paie → tu vois <strong>REÇU</strong> en temps réel.</div>
             </div>
-            <div style={{marginTop:12, fontSize:12, color:"rgba(245,241,232,.72)"}}>À la création : <span className="mono">created → awaiting_payment</span> · transitions journalisées.</div>
-          </div>
-          <div className="panel panel-pad">
-            <div className="section-title">Ce qui suit</div>
-            <ol style={{margin:"8px 0 0 18px", color:"var(--ink-60)", fontSize:13, lineHeight:1.7}}>
-              <li>Générer la facture Lightning (DEMO ou Bitnob)</li>
-              <li>Confirmer le paiement · financer</li>
-              <li>Déposer la preuve de livraison</li>
-              <li>Confirmer la réception · coter & verser en XOF</li>
-            </ol>
-          </div>
+          ) : (
+            <>
+              <div className="panel panel-pad" style={{borderColor:"var(--ok)", background:"#EAF6EC"}}>
+                <div className="section-title" style={{color:"var(--ok)"}}><IcoCheck/> Prêt à encaisser — {result.amountFcfa.toLocaleString("fr-FR")} FCFA</div>
+                <div className="section-rule"/>
+                <div style={{display:"grid", gap:10}}>
+                  <div style={{display:"grid", placeItems:"center", background:"#fff", borderRadius:12, padding:12, border:"1px solid var(--line)"}}>
+                    {qrSrc ? <img src={qrSrc} alt="QR Lightning" width={220} height={220} style={{borderRadius:8}}/> : <div className="mono" style={{fontSize:11, wordBreak:"break-all", padding:8}}>{result.invoice?.bolt11 ?? "Facture en génération…"}</div>}
+                    <div style={{fontSize:11, color:"var(--ink-60)", marginTop:6}}>{flow==="qr" ? "QR — le client scanne (10 s boutique) · pas de CODE" : "QR du lien — séquestré → CODE après J'ai bien reçu"}</div>
+                  </div>
+                  <label className="field"><span className="field-label">Lien de paiement (à donner / copier)</span>
+                    <div style={{display:"flex", gap:8}}>
+                      <input className="input mono" value={result.payUrl} readOnly style={{fontSize:12}}/>
+                      <button type="button" className="btn btn-sm" onClick={async()=>{ try{ await navigator.clipboard.writeText(result.payUrl);}catch{ void 0; }}}><IcoCopy/> Copier</button>
+                    </div>
+                    <span className="field-hint">Envoie par WhatsApp / colle en bio Insta — le client ouvre et paie (même facture Lightning).</span>
+                  </label>
+                  <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
+                    <a className="btn btn-coral" href={result.payUrl} target="_blank" rel="noreferrer">Ouvrir le lien <IcoArrow/></a>
+                    <button type="button" className="btn" onClick={()=>nav(`/orders/${result.id}`)}>Voir la commande →</button>
+                    <button type="button" className="btn" onClick={()=>{ setResult(null); setAmountFcfa(10000); }}>Nouveau montant</button>
+                  </div>
+                </div>
+              </div>
+              <div className="panel panel-pad">
+                <div className="section-title">Lien fixe Insta — comment ça marche</div>
+                <div style={{fontSize:12, color:"var(--ink-60)", lineHeight:1.7}}>
+                  Ton <span className="mono">{fixedLink}</span> est un lien vitrine. Le client choisit son montant et paie → ça crée une commande auto. Tu n’as rien à retaper. Il se renouvelle à chaque paiement (nouvelle facture, pas de réutilisation).
+                </div>
+              </div>
+            </>
+          )}
         </div>
       </div>
       <style>{`@media(max-width:900px){.new-grid{grid-template-columns:1fr!important}}`}</style>
