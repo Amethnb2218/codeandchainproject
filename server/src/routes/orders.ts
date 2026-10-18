@@ -123,13 +123,14 @@ router.post("/:id/invoice", async (req, res) => {
   const now = nowIso();
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
-  if (!config.hasBitnobCredentials()) {
-    // DEMO explicite — jamais presente comme reelle
+  // DEMO si commande créée en démo OU si pas de credentials — évite 502 inutile ("Bitnob indisponible") côté client même quand Render a des clés
+  const isDemoOrder = (order.demo_mode as number) === 1;
+  if (isDemoOrder || !config.hasBitnobCredentials()) {
     const fakeBolt11 = `lnbc${amountSats}n1demo_${reference.slice(0, 8)}_SENTABAKH_DEMO_NO_FUNDS`;
     db.prepare(
       "INSERT INTO lightning_invoices (id,order_id,bolt11,amount_sats,status,reference,expires_at,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)"
     ).run(invoiceId, orderId, fakeBolt11, amountSats, "pending_demo", reference, expiresAt, JSON.stringify({ demo: true, label: "DEMONSTRATION — AUCUN FONDS REEL" }), now);
-    return res.json({ demo: true, invoice: { id: invoiceId, bolt11: fakeBolt11, reference, status: "pending_demo", expiresAt, amountSats, label: "DEMONSTRATION — AUCUN FONDS REEL" } });
+    return res.json({ demo: true, invoice: { id: invoiceId, bolt11: fakeBolt11, reference, status: "pending_demo", expiresAt, amountSats, label: "DEMONSTRATION — AUCUN FONDS RÉEL" } });
   }
 
   // Reel — Bitnob POST /api/lightning/invoices

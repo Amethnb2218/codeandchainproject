@@ -76,6 +76,7 @@ function TopBand(){
 }
 
 function SiteHeader(){
+  const [open, setOpen] = React.useState(false);
   return (
     <header className="site-header">
       <div className="site-header-inner">
@@ -86,12 +87,22 @@ function SiteHeader(){
             <div className="wordmark-sub">Lightning → livraison → XOF · Dakar 2026</div>
           </div>
         </Link>
-        <nav className="nav" aria-label="Navigation principale">
+        <nav className="nav nav-desktop" aria-label="Navigation principale">
           <NavLink to="/" end>Commandes</NavLink>
           <NavLink to="/new" className="nav-cta">Recevoir</NavLink>
           <NavLink to="/health">Santé</NavLink>
         </nav>
+        <button className="nav-hamburger" aria-label="Menu" aria-expanded={open} onClick={()=>setOpen(v=>!v)}>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
       </div>
+      {open && (
+        <div className="nav-mobile">
+          <NavLink to="/" end onClick={()=>setOpen(false)}>Commandes</NavLink>
+          <NavLink to="/new" className="nav-cta" onClick={()=>setOpen(false)}>Recevoir</NavLink>
+          <NavLink to="/health" onClick={()=>setOpen(false)}>Santé</NavLink>
+        </div>
+      )}
     </header>
   );
 }
@@ -242,7 +253,8 @@ function NewOrder(){
 
   const estSats = Math.max(1, Math.ceil((Number(amountFcfa)||0) * 100_000_000 / 65_000_000));
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const fixedLink = `${origin}/pay/aliou`;
+  // Lien fixe générique (pas aliou en dur) — client tape son montant, nouvelle facture à chaque paiement
+  const fixedLink = `${origin}/pay`;
 
   const recevoir = async (e?:React.FormEvent)=>{
     if(e) e.preventDefault();
@@ -363,10 +375,10 @@ function NewOrder(){
                   </div>
                 </div>
               </div>
-              <div className="panel panel-pad">
-                <div className="section-title">Lien fixe Insta — comment ça marche</div>
+              <div className="panel panel-pad" style={{background:"var(--sage-soft)", borderColor:"var(--sage)"}}>
+                <div className="section-title" style={{color:"var(--forest)"}}>↗ Lien fixe — pour tous tes réseaux</div>
                 <div style={{fontSize:12, color:"var(--ink-60)", lineHeight:1.7}}>
-                  Ton <span className="mono">{fixedLink}</span> est un lien vitrine. Le client choisit son montant et paie → ça crée une commande auto. Tu n’as rien à retaper. Il se renouvelle à chaque paiement (nouvelle facture, pas de réutilisation).
+                  Ton <span className="mono">{fixedLink}</span> : mets-le en bio Insta, WhatsApp, TikTok, site. Le client ouvre, <strong>tape son montant et paie lui-même</strong> → nouvelle commande auto à chaque fois. Aucun QR à régénérer. Compatible boutique et livraison.
                 </div>
               </div>
             </>
