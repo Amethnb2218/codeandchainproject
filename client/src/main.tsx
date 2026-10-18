@@ -10,12 +10,12 @@ const STATUS_LABEL: Record<string, string> = {
   awaiting_payment: "En attente de paiement",
   payment_confirmed: "Paiement confirmé",
   conversion_pending: "Conversion en cours",
-  funded: "Financée",
+  funded: "Fonds séquestrés — argent bloqué", // Flux B: vendeur voit "Tu peux envoyer le livreur"
   delivery_declared: "Livraison déclarée",
-  delivery_confirmed: "Réception confirmée",
+  delivery_confirmed: "Réception confirmée — CODE vérifié = débloqué",
   payout_pending: "Versement en attente",
   payout_processing: "Versement en cours",
-  payout_completed: "Versement terminé",
+  payout_completed: "Versement terminé — ✅ REÇUS / Vérifié = débloqué",
   failed: "Échouée",
   expired: "Expirée",
   disputed: "Litige",
@@ -233,15 +233,16 @@ function Home(){
 /* ---------- New order ---------- */
 function NewOrder(){
   const nav = useNavigate();
-  const [form, setForm] = React.useState({ amountSats: 50000, description: "Commande riz 25kg — Dakar", sellerLabel: "Mareyeus Aliou", beneficiaryName: "Aminata Diallo", beneficiaryPhoneHint: "771234567", demoMode: true });
+  // VENDEUR tape en FCFA (graphe: 10 000 FCFA → serveur convertit 15 651 sats, taux Bitnob verrouillé 2min)
+  const [form, setForm] = React.useState({ amountFcfa: 25000, description: "Commande riz 25kg — Dakar", sellerLabel: "Mareyeus Aliou", beneficiaryName: "Aminata Diallo", beneficiaryPhoneHint: "771234567", demoMode: true, flow: "link" as "qr"|"link"|"delivery" });
   const [err, setErr] = React.useState<string|null>(null);
   const [fieldErr, setFieldErr] = React.useState<Record<string,string>>({});
   const [loading, setLoading] = React.useState(false);
 
   const validate = ()=>{
     const e:Record<string,string>={};
-    if(!form.amountSats || form.amountSats<1000) e.amountSats="Minimum 1 000 sats";
-    if(form.amountSats>100_000_000) e.amountSats="Maximum 100 000 000 sats (1 BTC)";
+    if(!form.amountFcfa || form.amountFcfa<500) e.amountFcfa="Minimum 500 FCFA";
+    if(form.amountFcfa>10_000_000) e.amountFcfa="Maximum 10 000 000 FCFA";
     if(form.description.trim().length<3) e.description="Description trop courte";
     if(form.sellerLabel.trim().length<2) e.sellerLabel="Nom du vendeur requis";
     if(form.beneficiaryName.trim().length<2) e.beneficiaryName="Bénéficiaire requis";
@@ -253,12 +254,14 @@ function NewOrder(){
     if(!validate()) return;
     setLoading(true);
     try{
-      const j = await api<{id:string}>("/api/orders", { method:"POST", body: JSON.stringify({ ...form, amountSats: Number(form.amountSats) }) });
+      const j = await api<{id:string}>("/api/orders", { method:"POST", body: JSON.stringify({ amountFcfa: Number(form.amountFcfa), description: form.description, sellerLabel: form.sellerLabel, beneficiaryName: form.beneficiaryName, beneficiaryPhoneHint: form.beneficiaryPhoneHint, demoMode: form.demoMode, flow: form.flow }) });
       nav(`/orders/${j.id}`);
     }catch(ex){ setErr((ex as Error).message);} finally{ setLoading(false);}
   };
 
-  const btc = satsToBtc(Number(form.amountSats)||0);
+  // Estimation locale: 65M XOF/BTC → 10 000 FCFA ≈ 15 385 sats (affichage; le serveur fixe le vrai taux 2min)
+  const estSats = Math.max(1, Math.ceil((Number(form.amountFcfa)||0) * 100_000_000 / 65_000_000));
+  const btc = satsToBtc(estSats);
 
   return (
     <div className="page" style={{maxWidth:980}}>
@@ -271,17 +274,22 @@ function NewOrder(){
             <p style={{margin:0, color:"var(--ink-60)", fontSize:13}}>Renseignez le montant en sats (1 BTC = 100 000 000 sats), l’objet et les acteurs. La commande démarre en <em>En attente de paiement</em>.</p>
           </div>
 
-          <div className="section-title" style={{marginTop:4}}><span style={{width:8,height:8,borderRadius:4,background:"var(--coral)",display:"inline-block"}}/> Montant & objet</div>
+          <div className="section-title" style={{marginTop:4}}><span style={{width:8,height:8,borderRadius:4,background:"var(--coral)",display:"inline-block"}}/> Montant & objet — VENDEUR tape en FCFA (serveur convertit en sats)</div>
           <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
-            <label className="field"><span className="field-label">Montant (sats) *</span>
-              <input className="input" type="number" value={form.amountSats} onChange={e=>setForm({...form, amountSats: Number(e.target.value)})} min={1000} max={100_000_000} required aria-describedby="hint-amount"/>
-              <span id="hint-amount" className="field-hint">{Number(form.amountSats).toLocaleString("fr-FR")} sats ≈ {btc} BTC</span>
-              {fieldErr.amountSats && <span className="error" style={{padding:"6px 10px"}}>{fieldErr.amountSats}</span>}
+            <label className="field"><span className="field-label">Montant (FCFA) *</span>
+              <input className="input" type="number" value={form.amountFcfa} onChange={e=>setForm({...form, amountFcfa: Number(e.target.value)})} min={500} max={10_000_000} required aria-describedby="hint-amount"/>
+              <span id="hint-amount" className="field-hint">{Number(form.amountFcfa).toLocaleString("fr-FR")} FCFA ≈ {estSats.toLocaleString("fr-FR")} sats ≈ {btc} BTC · taux Bitnob verrouillé 2 min (serveur)</span>
+              {fieldErr.amountFcfa && <span className="error" style={{padding:"6px 10px"}}>{fieldErr.amountFcfa}</span>}
             </label>
             <label className="field"><span className="field-label">Description *</span>
               <input className="input" value={form.description} onChange={e=>setForm({...form, description:e.target.value})} required placeholder="Ex. Riz 25kg — lot 3"/>
               {fieldErr.description && <span className="error" style={{padding:"6px 10px"}}>{fieldErr.description}</span>}
             </label>
+          </div>
+          <div className="section-title" style={{marginTop:4}}>Choix VENDEUR — graphe: QR CODE (boutique) vs LIEN WhatsApp (livraison)</div>
+          <div style={{display:"flex", gap:10, flexWrap:"wrap"}}>
+            <label className="check" style={{flex:"1 1 200px", border:"1px solid var(--line)", borderRadius:10, padding:"10px 12px", background: form.flow==="qr" ? "#EAF6EC" : undefined}}><input type="radio" name="flow" checked={form.flow==="qr"} onChange={()=>setForm({...form, flow:"qr"})}/> <span><strong>QR CODE — Boutique</strong><br/><span style={{fontSize:11, color:"var(--ink-60)"}}>10 s · scan sur place · pas de code · fin directe</span></span></label>
+            <label className="check" style={{flex:"1 1 200px", border:"1px solid var(--line)", borderRadius:10, padding:"10px 12px", background: form.flow==="link" ? "#FFF1E6" : undefined}}><input type="radio" name="flow" checked={form.flow==="link"} onChange={()=>setForm({...form, flow:"link"})}/> <span><strong>LIEN WhatsApp — Livraison</strong><br/><span style={{fontSize:11, color:"var(--ink-60)"}}>Séquestré → CODE 6ch (2min/3 essais, persisté)</span></span></label>
           </div>
 
           <div className="section-title"><IcoTruck/> Acteurs</div>
@@ -321,7 +329,7 @@ function NewOrder(){
             <div className="eyebrow" style={{color:"var(--sage)"}}>Prévisualisation</div>
             <div style={{fontFamily:"Space Grotesk, sans-serif", fontWeight:700, fontSize:18, marginTop:6}}>{form.description || "—"}</div>
             <div style={{display:"grid", gap:8, marginTop:12}}>
-              <div className="kv"><span className="kv-k">Montant</span><span className="kv-v"><strong>{Number(form.amountSats).toLocaleString("fr-FR")} sats</strong> <span style={{opacity:.7}}>· {btc} BTC</span></span></div>
+              <div className="kv"><span className="kv-k">Montant</span><span className="kv-v"><strong>{Number(form.amountFcfa).toLocaleString("fr-FR")} FCFA</strong> <span style={{opacity:.7}}>≈ {estSats.toLocaleString("fr-FR")} sats · {btc} BTC</span> <span className="badge" style={{fontSize:10, marginLeft:6}}>{form.flow==="qr" ? "QR · 10s" : "LIEN · séquestré"}</span></span></div>
               <div className="kv"><span className="kv-k">Vendeur</span><span className="kv-v">{form.sellerLabel||"—"}</span></div>
               <div className="kv"><span className="kv-k">Bénéficiaire</span><span className="kv-v">{form.beneficiaryName||"—"} {form.beneficiaryPhoneHint && <span style={{opacity:.7}}>· {form.beneficiaryPhoneHint}</span>}</span></div>
               <div className="kv"><span className="kv-k">Mode</span><span className="kv-v">{form.demoMode ? <span className="badge badge-demo" style={{fontSize:11}}>DEMO — AUCUN FONDS RÉEL</span> : <span className="badge" style={{background:"var(--paper)", color:"var(--forest)"}}>SANDBOX — test réel</span>}</span></div>
@@ -424,17 +432,32 @@ function OrderDetail(){
       </div>
     )};
   } else if(status==="funded"){
-    primary = { kicker:"Étape 3 · Livraison", title:"Déposer la preuve de livraison", desc:"Visible par le bénéficiaire. Passage funded → delivery_declared. Seul le vendeur dépose.", actions: (
+    const flow = String((order as Record<string,unknown>).flow ?? (order as Record<string,unknown>).type ?? "delivery");
+    const isQr = flow === "qr";
+    primary = { kicker: isQr ? "Flux A · Boutique — ✅ REÇUS" : "Flux B · FONDS SÉQUESTRÉS — argent bloqué", title: isQr ? "10 000 FCFA REÇUS — Fin (pas de code)" : "Fonds séquestrés — Tu peux envoyer le livreur", desc: isQr ? "Flux A boutique (10 s) : paiement sur place validé. Passez direct au versement XOF (sans CODE). Transition funded → payout_pending." : "Flux B livraison : argent bloqué côté serveur. Livreur hors-plateforme en route. La cliente cliquera J'ai bien reçu → CODE 6 chiffres (2min/3 essais, persisté).", actions: (
       <div style={{display:"grid", gap:10}}>
-        <textarea className="input" value={proofNote} onChange={e=>setProofNote(e.target.value)} rows={3} aria-label="Note de preuve"/>
-        <button className="btn btn-coral" onClick={()=>call(`/api/orders/${id}/proof`, {note: proofNote})}><IcoTruck/> Déposer preuve de livraison</button>
+        {isQr && <div className="notice notice-strong" style={{borderColor:"var(--ok)", background:"#EAF6EC"}}>✅ Fin Flux A — pas de CODE. Le payout XOF peut être lancé ci-dessous (bouton « Passer au versement »).</div>}
+        {!isQr && <div className="notice" style={{borderColor:"#f97316", background:"#FFF1E6", color:"#7c2d12"}}><strong>FONDS SÉQUESTRÉS</strong> — argent bloqué. Le vendeur voit : « Tu peux envoyer le livreur ».</div>}
+        {isQr ? <button className="btn btn-coral" onClick={async()=>{ setErr(null); try{ await api(`/api/orders/${id}/payout/quote`, {method:"POST", body: JSON.stringify({toCurrency:"XOF", country:"SN", fromAsset:"USDT"})}); await load(); }catch(e){ setErr((e as Error).message);} }}><IcoWallet/> Passer au versement XOF (Flux A)</button> : <><textarea className="input" value={proofNote} onChange={e=>setProofNote(e.target.value)} rows={3} aria-label="Note de preuve (Flux B)"/><button className="btn btn-coral" onClick={()=>call(`/api/orders/${id}/proof`, {note: proofNote})}><IcoTruck/> Déposer preuve — livreur en route (hors-plateforme)</button></>}
       </div>
     )};
   } else if(status==="delivery_declared"){
-    primary = { kicker:"Étape 4 · Réception", title:"Confirmer la réception", desc:"Action du bénéficiaire. Passage delivery_declared → delivery_confirmed. Débloque la cotation XOF.", actions: <button className="btn btn-coral" onClick={()=>call(`/api/orders/${id}/confirm-delivery`)}><IcoCheck/> Confirmer réception (bénéficiaire)</button> };
+    primary = { kicker:"Étape 4 · Livreur arrivé → J'ai bien reçu → CODE", title:"Livreur hors-plateforme arrivé — cliente clique J'ai bien reçu", desc:"Flux B: la cliente (sans compte) clique sur son lien → génère CODE 6 chiffres (2min/3 essais, persisté). Puis vendeur saisit le CODE (Mes Ventes) → Vérifié = débloqué.", actions: (
+      <div style={{display:"grid", gap:10}}>
+        <button className="btn btn-coral" onClick={()=>call(`/api/orders/${id}/confirm-delivery`)}><IcoCheck/> Confirmer réception</button>
+        <div style={{display:"flex", gap:8, flexWrap:"wrap"}}>
+          <button className="btn" onClick={async()=>{ setErr(null); try{ const j=await api<{code:string;display:string;message:string;expiresAt:string}>(`/api/orders/${id}/delivery-code`, {method:"POST"}); setErr(`${j.message} — expire ${new Date(j.expiresAt).toLocaleTimeString("fr-FR")} · 3 essais`); await load(); }catch(e){ setErr((e as Error).message);} }}><IcoShield/> Générer CODE (J'ai bien reçu)</button>
+          <button className="btn" onClick={async()=>{ setErr(null); try{ const j=await api<{code:string;display:string;message:string}>(`/api/orders/${id}/delivery-code`); if(j.code) setErr(`${j.message} (persisté — même code au refresh)`); else setErr(j.message ?? "Aucun CODE"); }catch(e){ setErr((e as Error).message);} }}>Relire CODE (refresh → même code)</button>
+        </div>
+        <div style={{display:"flex", gap:8, alignItems:"end", flexWrap:"wrap"}}>
+          <label className="field" style={{flex:"1 1 160px"}}><span className="field-label">CODE 6 chiffres — Vendeur saisit</span><input className="input mono" id="verify-code-input" placeholder="482917" maxLength={6} style={{letterSpacing:".18em", fontWeight:700}}/></label>
+          <button className="btn btn-coral" onClick={async()=>{ const el=document.getElementById("verify-code-input") as HTMLInputElement|null; const code=el?.value ?? ""; setErr(null); try{ const j=await api<{message:string}>(`/api/orders/${id}/delivery-code/verify`, {method:"POST", body: JSON.stringify({code})}); setErr(j.message); await load(); }catch(e){ setErr((e as Error).message);} }}><IcoCheck/> Vérifier CODE</button>
+        </div>
+      </div>
+    ) };
   } else if(status==="delivery_confirmed"){
     const hasQuote = pQuotes.length>0;
-    primary = { kicker:"Étape 5 · Versement", title: hasQuote ? "Initialiser le versement XOF" : "Demander une cotation XOF", desc: hasQuote ? "Choisissez la cotation et le bénéficiaire (mobile money / banque). Anti double-versement actif (409 si déjà en cours)." : "Cotation estimée DEMO (sats × 600 ≈ XOF) ou réelle via POST /api/payouts/quotes. Une seule cotation active à la fois.", actions: hasQuote ? (
+    primary = { kicker:"Étape 5 · Versement — ✅ Vérifié = Argent débloqué", title: hasQuote ? "Initialiser le versement XOF (débloqué)" : "Demander une cotation XOF", desc: hasQuote ? "CODE vérifié → argent débloqué. Choisissez la cotation et le bénéficiaire (mobile money / banque). Anti double-versement (409)." : "CODE vérifié → versement disponible. Cotation estimée DEMO (sats × 600 ≈ XOF) ou réelle via Bitnob.", actions: hasQuote ? (
       <div style={{display:"grid", gap:10}}>
         <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10}}>
           <label className="field"><span className="field-label">Nom bénéficiaire</span><input className="input" value={benef.account_name} onChange={e=>setBenef({...benef, account_name:e.target.value})}/></label>

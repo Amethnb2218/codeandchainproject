@@ -7,7 +7,7 @@ const ALLOWED: Record<OrderStatus, OrderStatus[]> = {
   awaiting_payment: ["payment_confirmed", "expired", "failed"],
   payment_confirmed: ["conversion_pending", "failed"],
   conversion_pending: ["funded", "failed"],
-  funded: ["delivery_declared", "disputed", "failed"],
+  funded: ["delivery_declared", "payout_pending", "disputed", "failed"], // FLUX A: qr (boutique, pas de code) → funded → payout_pending direct
   delivery_declared: ["delivery_confirmed", "disputed", "failed"],
   delivery_confirmed: ["payout_pending", "disputed", "failed"],
   payout_pending: ["payout_processing", "failed", "disputed"],
@@ -58,5 +58,11 @@ export function getOrderFull(orderId: string): Record<string, unknown> | null {
   const payouts = db.prepare("SELECT * FROM payouts WHERE order_id=? ORDER BY created_at DESC").all(orderId);
   const proofs = db.prepare("SELECT * FROM delivery_proofs WHERE order_id=? ORDER BY created_at ASC").all(orderId);
   const transitions = db.prepare("SELECT * FROM order_transitions WHERE order_id=? ORDER BY created_at ASC").all(orderId);
-  return { order, invoices, tradingQuotes: quotes, tradingOrders: tOrders, payoutQuotes: pQuotes, payouts, proofs, transitions };
+  let deliveryCodes: unknown[] = [];
+  try {
+    deliveryCodes = db.prepare("SELECT id, code_hint, status, expires_at, attempts, created_at, verified_at FROM delivery_codes WHERE order_id=? ORDER BY created_at DESC").all(orderId);
+  } catch { /* table not yet migrated on old DB */ }
+  let rateQuotes: unknown[] = [];
+  try { rateQuotes = db.prepare("SELECT * FROM quotes WHERE order_id=? ORDER BY created_at DESC").all(orderId); } catch { /* old DB */ }
+  return { order, invoices, tradingQuotes: quotes, tradingOrders: tOrders, payoutQuotes: pQuotes, payouts, proofs, transitions, deliveryCodes, rateQuotes };
 }

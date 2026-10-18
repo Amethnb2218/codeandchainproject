@@ -3,7 +3,7 @@
 > Paiement Bitcoin Lightning → commande commerciale → preuve de livraison → versement en monnaie locale (XOF). Intègre Bitnob (Lightning, Trading, Payouts).
 
 **Événement :** Code & Chain Dakar 2026, 17–18 octobre 2026.  
-**Statut au 16 octobre 2026 :** Prototype complet opérationnel en local. Phase A (veille) + prototype hackathon réalisés. Mode **DEMO** par défaut (aucun fonds réel) ; mode **sandbox réel** activable si `BITNOB_CLIENT_ID/SECRET` fournis jour J.
+**Statut au 18 octobre 2026 :** Sandbox Bitnob valide (preflight 4/4 whoami/balances/countries/prices) — HMAC signe avec prd:sandbox_... . Prototype complet opérationnel en local. Phase A (veille) + prototype hackathon réalisés. Mode **DEMO** par défaut (aucun fonds réel) ; mode **sandbox réel** activable si `BITNOB_CLIENT_ID/SECRET` fournis jour J.
 
 ## Fonctionnalités opérationnelles
 
@@ -48,7 +48,7 @@ $machinePath=[Environment]::GetEnvironmentVariable("Path","Machine"); $userPath=
 npm.cmd install
 # optionnel : copier .env.example -> .env et renseigner BITNOB_* si fournis
 Copy-Item .env.example .env
-# éditer .env : BITNOB_CLIENT_ID, BITNOB_CLIENT_SECRET, BITNOB_WEBHOOK_SECRET, BITNOB_CUSTOMER_ID
+# éditer .env : BITNOB_CLIENT_ID, BITNOB_CLIENT_ID (UUID) + BITNOB_CLIENT_SECRET (avec prefixe prd:sandbox_...), BITNOB_WEBHOOK_SECRET
 ```
 
 ## Configuration (.env)

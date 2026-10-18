@@ -4,34 +4,78 @@ import { getDb } from "../db/index.js";
 import { transitionOrder, nowIso, newId, getOrderFull } from "../db/helpers.js";
 import { config } from "../config.js";
 import { bitnobRequest } from "../bitnob/client.js";
+import { getOrCreateDeliveryCode, verifyDeliveryCode } from "../deliveryCode.js";
 
 const router = Router();
 
-// POST /api/orders — creer commande
-router.post("/", (req, res) => {
+// POST /api/orders — creer commande (FLUX graphe valide)
+// VENDEUR tape en FCFA (ex 10 000 FCFA → 15 651 sats), taux Bitnob verrouillé 2min; CHOIX: QR CODE (boutique, fin sans code) vs LIEN WhatsApp (livraison, séquestré + CODE)
+router.post("/", async (req, res) => {
   const schema = z.object({
-    amountSats: z.number().int().positive().max(100_000_000),
+    amountSats: z.number().int().positive().max(100_000_000).optional(),
+    amountFcfa: z.number().int().positive().min(500).max(10_000_000).optional(),
     description: z.string().min(3).max(500),
     sellerLabel: z.string().min(2).max(120),
     beneficiaryName: z.string().min(2).max(120),
     beneficiaryPhoneHint: z.string().max(30).optional(),
     demoMode: z.boolean().optional().default(false),
-  });
+    flow: z.enum(["qr", "link", "delivery"]).optional().default("delivery"),
+  }).refine((d) => Boolean(d.amountSats || d.amountFcfa), { message: "amountFcfa ou amountSats requis", path: ["amountFcfa"] });
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "Validation", details: parsed.error.flatten() });
   const d = parsed.data;
+  let amountSats = d.amountSats ?? 0;
+  let amountFcfa: number | null = d.amountFcfa ?? null;
+  // Si FCFA fourni, conversion serveur (taux Bitnob verrouillé 2min)
+  if (amountFcfa != null && amountSats === 0) {
+    const { buildFxQuote } = await import("../fx.js");
+    const q = await buildFxQuote(amountFcfa);
+    amountSats = q.amountSats;
+    // Persister la cotation FCFA→sats (2min, statut pending)
+    // q.btcPriceXof est un string entier, q.expiresAt est ISO
+  }
+  if (!amountSats || amountSats <= 0) return res.status(400).json({ error: "Montant invalide après conversion" });
+  // Si amountSats direct sans FCFA, déduire FCFA estimé pour affichage
+  if (amountFcfa == null) {
+    try {
+      const { buildFxQuote, satsToFcfa } = await import("../fx.js");
+      const { getBtcPriceXof } = await import("../fx.js");
+      const { price } = await getBtcPriceXof();
+      amountFcfa = satsToFcfa(amountSats, price);
+    } catch { amountFcfa = null; }
+  }
   const id = newId("ord");
   const now = nowIso();
   const db = getDb();
-  db.prepare(
-    "INSERT INTO orders (id,status,amount_sats,description,seller_label,beneficiary_name,beneficiary_phone_hint,demo_mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)"
-  ).run(id, "created", d.amountSats, d.description, d.sellerLabel, d.beneficiaryName, d.beneficiaryPhoneHint ?? null, d.demoMode ? 1 : 0, now, now);
+  // flow: qr = boutique (10s, pas de code), link = livraison WhatsApp (séquestré + CODE), delivery = ancien
+  const flowVal = d.flow ?? "delivery";
+  // Compat ancienne DB sans colonne flow
+  try {
+    db.prepare(
+      "INSERT INTO orders (id,status,amount_sats,amount_fcfa,description,seller_label,beneficiary_name,beneficiary_phone_hint,type,flow,demo_mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"
+    ).run(id, "created", amountSats, amountFcfa, d.description, d.sellerLabel, d.beneficiaryName, d.beneficiaryPhoneHint ?? null, flowVal, flowVal, d.demoMode ? 1 : 0, now, now);
+  } catch {
+    db.prepare(
+      "INSERT INTO orders (id,status,amount_sats,description,seller_label,beneficiary_name,beneficiary_phone_hint,demo_mode,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)"
+    ).run(id, "created", amountSats, d.description, d.sellerLabel, d.beneficiaryName, d.beneficiaryPhoneHint ?? null, d.demoMode ? 1 : 0, now, now);
+  }
+  // Persister la cotation FCFA→sats pour audit (si conversion faite)
+  if (d.amountFcfa != null) {
+    try {
+      const { buildFxQuote } = await import("../fx.js");
+      const q = await buildFxQuote(d.amountFcfa);
+      // Réutiliser la même conversion déjà calculée pour amountSats
+      db.prepare("INSERT INTO quotes (id,order_id,amount_fcfa,amount_sats,btc_price_xof,source,expires_at,status,created_at) VALUES (?,?,?,?,?,?,?,?,?)").run(
+        newId("qt"), id, d.amountFcfa, amountSats, q.btcPriceXof, q.source, q.expiresAt, "pending", now
+      );
+    } catch { /* ignore si table absente */ }
+  }
   db.prepare(
     "INSERT INTO order_transitions (id,order_id,from_status,to_status,actor,reason,created_at) VALUES (?,?,?,?,?,?,?)"
-  ).run(newId("tr"), id, "created", "created", "system", "creation", now);
-  // auto -> awaiting_payment
+  ).run(newId("tr"), id, "created", "created", "system", `creation flow=${flowVal} ${amountFcfa ? `${amountFcfa} FCFA` : ""}`.trim(), now);
   transitionOrder(id, "awaiting_payment", "system", "creation");
-  res.status(201).json({ id, status: "awaiting_payment" });
+  const quote = (()=>{ try{ return db.prepare("SELECT * FROM quotes WHERE order_id=? ORDER BY created_at DESC LIMIT 1").get(id) as Record<string,unknown>|undefined; }catch{ return undefined; }})();
+  res.status(201).json({ id, status: "awaiting_payment", flow: flowVal, amountFcfa, amountSats, quote });
 });
 
 // GET /api/orders — liste
@@ -88,28 +132,38 @@ router.post("/:id/invoice", async (req, res) => {
     return res.json({ demo: true, invoice: { id: invoiceId, bolt11: fakeBolt11, reference, status: "pending_demo", expiresAt, amountSats, label: "DEMONSTRATION — AUCUN FONDS REEL" } });
   }
 
-  // Reel — Bitnob POST /api/lightning/invoices (customer_id requis; on utilise un customer genere ou env)
-  const customerId = (process.env.BITNOB_CUSTOMER_ID ?? "cust_demo") as string;
-  const r = await bitnobRequest<{
-    data?: { id?: string; payRequest?: string; bolt11?: string; status?: string; expiresAt?: string };
-  }>("POST", "/api/lightning/invoices", {
-    customer_id: customerId,
+  // Reel — Bitnob POST /api/lightning/invoices
+  // Spec: customer_id optionnel (UUID), amount (sats), description, expiry (sec), reference (idempotency)
+  // Si BITNOB_CUSTOMER_ID absent ou non-UUID, on l'omet — l'API l'accepte comme optionnel.
+  const rawCustomerId = (config.bitnob.customerId || process.env.BITNOB_CUSTOMER_ID || "").trim();
+  const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawCustomerId);
+  const body: Record<string, unknown> = {
     amount: amountSats,
-    description: `SENTABAKH ${orderId} — ${order.description}`,
+    description: `SENTABAKH ${orderId} — ${String(order.description).slice(0, 80)}`,
     expiry: 900,
     reference,
-  });
+  };
+  if (isUuid) body.customer_id = rawCustomerId;
+  const r = await bitnobRequest<{
+    success?: boolean; message?: string;
+    data?: { id?: string; payment_hash?: string; request?: string; payRequest?: string; bolt11?: string; amount_sat?: string; status?: string; expires_at?: string; created_at?: string };
+  }>("POST", "/api/lightning/invoices", body);
   if (!r.ok) {
     return res.status(502).json({ error: "Bitnob indisponible", detail: r.error, status: r.status });
   }
+  // Reponse Bitnob: { success, data: { id, payment_hash, request (BOLT11), amount_sat, status, expires_at } }
   const data = (r.data as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
   const inner = (data ?? (r.data as Record<string, unknown>)) as Record<string, unknown>;
-  const bolt11 = (inner.payRequest as string) ?? (inner.bolt11 as string) ?? "";
+  const bolt11 = (inner.request as string) ?? (inner.payRequest as string) ?? (inner.bolt11 as string) ?? "";
   const bitnobId = (inner.id as string) ?? "";
+  const remoteExpiresAt = (inner.expires_at as string) ?? (inner.expiresAt as string) ?? expiresAt;
+  // Normaliser expires_at: Bitnob renvoie parfois epoch string, parfois ISO
+  let finalExpiresAt = remoteExpiresAt;
+  if (/^\d{10}$/.test(String(remoteExpiresAt))) finalExpiresAt = new Date(parseInt(String(remoteExpiresAt),10)*1000).toISOString();
   db.prepare(
     "INSERT INTO lightning_invoices (id,order_id,bitnob_invoice_id,bolt11,amount_sats,status,reference,expires_at,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)"
-  ).run(invoiceId, orderId, bitnobId, bolt11, amountSats, "pending", reference, expiresAt, JSON.stringify(r.data), now);
-  res.json({ demo: false, invoice: { id: invoiceId, bolt11, bitnobId, reference, status: "pending", expiresAt, amountSats } });
+  ).run(invoiceId, orderId, bitnobId, bolt11, amountSats, "pending", reference, finalExpiresAt, JSON.stringify(r.data), now);
+  res.json({ demo: false, invoice: { id: invoiceId, bolt11, bitnobId, reference, status: "pending", expiresAt: finalExpiresAt, amountSats } });
 });
 
 // POST /api/orders/:id/demo/confirm-payment — simuler paiement confirme (DEMO uniquement)
@@ -127,8 +181,8 @@ router.post("/:id/demo/confirm-payment", (req, res) => {
   const t1 = transitionOrder(orderId, "payment_confirmed", "demo", "paiement simule");
   if (!t1.ok) return res.status(409).json({ error: t1.error });
   transitionOrder(orderId, "conversion_pending", "demo", "conversion simulee");
-  transitionOrder(orderId, "funded", "demo", "financement simule");
-  res.json({ ok: true, status: "funded", label: "DEMONSTRATION — AUCUN FONDS REEL" });
+  transitionOrder(orderId, "funded", "demo", "financement simule — FONDS SÉQUESTRÉS (Flux B) / REÇUS (Flux A)");
+  res.json({ ok: true, status: "funded", label: "DEMONSTRATION — AUCUN FONDS REEL — Flux B: FONDS SÉQUESTRÉS, vendeur: Tu peux envoyer le livreur" });
 });
 
 // POST /api/orders/:id/demo/confirm-payout — simuler versement termine (DEMO)
@@ -319,7 +373,7 @@ router.get("/:id/trading/status", async (req, res) => {
   res.json({ orderStatus: order.status, tradingStatus: statusRaw, order: { ...tOrder, status: statusRaw }, quote: tQuote, bitnob: data });
 });
 
-// POST /api/orders/:id/proof — preuve de livraison
+// POST /api/orders/:id/proof — preuve de livraison (vendeur)
 router.post("/:id/proof", (req, res) => {
   const orderId = req.params.id;
   const schema = z.object({ note: z.string().min(3).max(1000), imageUrl: z.string().url().optional() });
@@ -328,7 +382,7 @@ router.post("/:id/proof", (req, res) => {
   const db = getDb();
   const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
   if (!order) return res.status(404).json({ error: "Commande introuvable" });
-  if ((order.status as string) !== "funded") return res.status(409).json({ error: `Preuve uniquement si financée (actuel: ${order.status})` });
+  if ((order.status as string) !== "funded") return res.status(409).json({ error: `Preuve uniquement si FONDS SÉQUESTRÉS / financée (actuel: ${order.status})` });
   const id = newId("proof");
   db.prepare("INSERT INTO delivery_proofs (id,order_id,note,image_url,created_by,created_at) VALUES (?,?,?,?,?,?)").run(
     id,
@@ -338,21 +392,112 @@ router.post("/:id/proof", (req, res) => {
     "seller",
     nowIso()
   );
-  const t = transitionOrder(orderId, "delivery_declared", "seller", "preuve deposee");
+  const t = transitionOrder(orderId, "delivery_declared", "seller", "preuve deposee — livreur en route (hors-plateforme)");
   if (!t.ok) return res.status(409).json({ error: t.error });
   res.status(201).json({ id, status: "delivery_declared" });
 });
 
-// POST /api/orders/:id/confirm-delivery — confirmation reception
+// POST /api/orders/:id/confirm-delivery — confirmation reception (cliente clique "J'ai bien reçu" → déclenche CODE)
 router.post("/:id/confirm-delivery", (req, res) => {
   const orderId = req.params.id;
   const db = getDb();
   const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
   if (!order) return res.status(404).json({ error: "Commande introuvable" });
-  if ((order.status as string) !== "delivery_declared") return res.status(409).json({ error: `Confirmation uniquement si livree (actuel: ${order.status})` });
-  const t = transitionOrder(orderId, "delivery_confirmed", "beneficiary", "reception confirmee");
+  if ((order.status as string) !== "delivery_declared") return res.status(409).json({ error: `Confirmation uniquement si livree (actuel: ${order.status}) — livreur doit être arrivé` });
+  const t = transitionOrder(orderId, "delivery_confirmed", "beneficiary", "reception confirmee — cliente a cliqué J'ai bien reçu");
   if (!t.ok) return res.status(409).json({ error: t.error });
   res.json({ ok: true, status: "delivery_confirmed" });
+});
+
+// ── FLUX B — CODE DE REMISE (séquestré) ──
+// Règle graphe: seule VENDEUR+ADMIN ont un compte; CLIENT et LIVREUR jamais de compte.
+// Séquence: FONDS SÉQUESTRÉS → Livreur arrive hors-plateforme → Cliente clique "J'ai bien reçu" → CODE 482917 (6ch, 2min, 3 essais, persisté) → Cliente dicte → Livreur appelle vendeur → Vendeur saisit code → Vérifié = argent débloqué (versement XOF)
+
+// POST /api/orders/:id/delivery-code — générer/récupérer le CODE (cliente, sans auth, idempotent persisté)
+router.post("/:id/delivery-code", (req, res) => {
+  const orderId = req.params.id;
+  const db = getDb();
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
+  if (!order) return res.status(404).json({ error: "Commande introuvable" });
+  const st = String(order.status);
+  if (!["funded", "delivery_declared", "delivery_confirmed"].includes(st)) {
+    return res.status(409).json({ error: `CODE uniquement quand fonds séquestrés / livraison (actuel: ${st})`, hint: "Attendre FONDS SÉQUESTRÉS puis Livreur arrivé" });
+  }
+  const result = getOrCreateDeliveryCode(orderId);
+  if (!result.code) {
+    // Code existant sans plain (compat) — hint seule
+    return res.json({ codeHint: result.hint, expiresAt: result.expiresAt, attemptsLeft: 3, persisted: true, note: "Code persisté — si refresh, même code (hint masqué)" });
+  }
+  const display = `${result.code.slice(0, 3)} ${result.code.slice(3)}`;
+  res.json({
+    code: result.code,
+    display,
+    hint: result.hint,
+    expiresAt: result.expiresAt,
+    isNew: result.isNew,
+    persisted: true,
+    message: `DITES AU LIVREUR : ${display}`,
+    ttlMs: 120_000,
+    maxAttempts: 3,
+    note: result.isNew ? "CODE 6 chiffres — 2min — 3 essais — persisté en base" : "Même CODE — si elle actualise, le même code réapparaît",
+  });
+});
+
+// GET /api/orders/:id/delivery-code — relire le code actif (cliente refresh → même code, vendeur vérif)
+router.get("/:id/delivery-code", (req, res) => {
+  const orderId = req.params.id;
+  const db = getDb();
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
+  if (!order) return res.status(404).json({ error: "Commande introuvable" });
+  let row: Record<string, unknown> | undefined;
+  try {
+    row = db.prepare("SELECT id, code_hint, code_plain, status, expires_at, attempts, created_at, verified_at FROM delivery_codes WHERE order_id=? ORDER BY created_at DESC LIMIT 1").get(orderId) as Record<string, unknown> | undefined;
+  } catch { return res.json({ code: null, note: "Aucun code" }); }
+  if (!row || row.status !== "active") return res.json({ code: null, status: row?.status ?? "none", note: "Aucun CODE actif — générer via POST /delivery-code après J'ai bien reçu" });
+  const exp = new Date(row.expires_at as string).getTime();
+  if (exp < Date.now()) return res.json({ code: null, status: "expired", note: "CODE expiré — régénérer" });
+  // Retourne plain uniquement si existant (sinon hint)
+  const plain = row.code_plain as string | null;
+  if (plain && /^\d{6}$/.test(plain)) {
+    return res.json({ code: plain, display: `${plain.slice(0, 3)} ${plain.slice(3)}`, hint: row.code_hint, expiresAt: row.expires_at, attempts: row.attempts, maxAttempts: 3, persisted: true, message: `DITES AU LIVREUR : ${plain.slice(0, 3)} ${plain.slice(3)}` });
+  }
+  return res.json({ codeHint: row.code_hint, hint: row.code_hint, expiresAt: row.expires_at, attempts: row.attempts, persisted: true });
+});
+
+// POST /api/orders/:id/delivery-code/verify — Vendeur saisit le code (VENDEUR/ADMIN, 3 essais, 2min)
+router.post("/:id/delivery-code/verify", (req, res) => {
+  const orderId = req.params.id;
+  const schema = z.object({ code: z.string().min(4).max(10) });
+  const parsed = schema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Validation", details: parsed.error.flatten() });
+  const db = getDb();
+  const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
+  if (!order) return res.status(404).json({ error: "Commande introuvable" });
+  const st = String(order.status);
+  if (!["funded", "delivery_declared", "delivery_confirmed", "disputed"].includes(st)) {
+    return res.status(409).json({ error: `Vérification CODE uniquement après FONDS SÉQUESTRÉS (actuel: ${st})` });
+  }
+  const r = verifyDeliveryCode(orderId, parsed.data.code);
+  if (!r.ok) {
+    // Déterminer le code erreur HTTP
+    const msg = r.error ?? "Code incorrect";
+    if (msg.includes("expiré")) return res.status(410).json({ error: msg });
+    if (msg.includes("verrouillé") || msg.includes("Trop de tentatives")) return res.status(423).json({ error: msg, hint: "CODE verrouillé — régénération requise (cliente: J'ai bien reçu)" });
+    if (msg.includes("Aucun code")) return res.status(404).json({ error: msg });
+    // Mauvais code mais essais restants → 401 avec hint
+    const row2 = (()=>{ try{ return db.prepare("SELECT attempts FROM delivery_codes WHERE order_id=? AND status='active' ORDER BY created_at DESC LIMIT 1").get(orderId) as Record<string,unknown>|undefined; }catch{ return undefined; }})();
+    const left = row2 ? Math.max(0, 3 - (row2.attempts as number)) : 0;
+    return res.status(401).json({ error: msg, attemptsLeft: left, maxAttempts: 3 });
+  }
+  // Succès → transition vers delivery_confirmed si besoin, puis débloque versement
+  const cur = String((db.prepare("SELECT status FROM orders WHERE id=?").get(orderId) as Record<string,unknown>|undefined)?.status ?? st);
+  if (cur === "delivery_declared") transitionOrder(orderId, "delivery_confirmed", "seller", `CODE vérifié ${r.codeId} — remise vérifiée`);
+  else if (cur === "funded") {
+    transitionOrder(orderId, "delivery_declared", "seller", "CODE vérifié — livraison implicite");
+    transitionOrder(orderId, "delivery_confirmed", "seller", "CODE vérifié — remise vérifiée");
+  }
+  // Le payout pourra être initié ensuite (delivery_confirmed → payout_pending)
+  res.json({ ok: true, verified: true, message: "✅ Vérifié = Argent débloqué — versement XOF disponible (POST /payout/quote → /payout/initialize)", orderStatus: (db.prepare("SELECT status FROM orders WHERE id=?").get(orderId) as Record<string,unknown>)?.status });
 });
 
 // POST /api/orders/:id/payout/quote — cotation versement (reelle si Bitnob, sinon demo)
@@ -386,40 +531,71 @@ router.post("/:id/payout/quote", async (req, res) => {
     return res.json({ demo: true, quote: { id: qid, status: "pending_demo", estimatedXof: demoAmountXof, label: "DEMONSTRATION — AUCUN FONDS REEL" } });
   }
 
-  // Reel: POST /api/payouts/quotes — bloque si conversion BTC->USDT non confirmee
-  if ((order.status as string) === "delivery_confirmed" && parsed.data.fromAsset === "USDT" && !((order.amount_sats as number) && db.prepare("SELECT 1 FROM trading_orders WHERE order_id=? AND status IN ('completed','filled','success','executed') LIMIT 1").get(orderId))) {
-    // On autorise la cotation USDT meme sans trading si le marchand a deja des USDT, mais on l'indique
-    // Pas de blocage dur — informatif seulement (le preflight balances le dira)
-  }
-  // Montant en base units (XOF payout depuis USDT est en micro-units 6 decimales ; ici on derive du sats*600 demo -> non)
-  // En reel, le montant USDT en micro-units doit venir du trading; faute de trading confirme on ne peut promettre un montant exact.
-  // On exige que l'appelant fournisse le montant ou on utilise le solde USDT disponible — on garde l'ancienne logique avec garde.
+  // Reel: POST /api/payouts/quotes — Bitnob Payouts flow: quote → initialize → finalize
+  // Spec: amount = crypto amount en base units (USDT: micro-units 1_000_000 = 1 USDT), from_asset, to_currency, country, source, reference
   const reference = newId("payoutref");
-  // Pour XOF depuis USDT : Bitnob attend `amount` en base units de from_asset (USDT micro-units). Si on n'a pas de montant trading, on refuse de mentir.
-  const tradingOk = db.prepare("SELECT quantity, raw_json FROM trading_quotes WHERE order_id=? AND status='executed' ORDER BY created_at DESC LIMIT 1").get(orderId) as Record<string, unknown> | undefined;
+  // Montant: en réel depuis USDT, il faut des micro-units. Si trading BTC->USDT confirmé, on peut estimer.
+  // Sinon, on déduit USDT ≈ sats * btcPrice / 1e8 / usdtRate, ou on refuse si on ne peut pas être fiable.
   let amountBaseUnits: string;
-  if (tradingOk) {
-    // On estime l'USDT obtenu via trading (non fiable sans prix reel) — on expose le doute
-    const raw = (()=>{ try{return JSON.parse(tradingOk.raw_json as string);}catch{return null;}})() as Record<string, unknown> | null;
-    const usdtAmount = (raw as Record<string, unknown> | null)?.data ? String(((raw as Record<string, unknown>).data as Record<string, unknown>).quoteAmount ?? "") : "";
-    // Fallback: si le trading n'expose pas d'USDT amount, on reste bloquant et on l'indique
-    if (!usdtAmount) {
-      return res.status(409).json({ error: "Conversion BTC->USDT non resolue : montant USDT indisponible — verifier trading/status avant payout", hint: "Appelez GET /api/orders/:id/trading/status ; si pas funded, la cotation payout ne peut etre fiable." });
-    }
-    amountBaseUnits = usdtAmount;
-  } else {
-    // Pas de trading confirme : on utilise un montant fourni par le client si present, sinon on demande explicitement
-    // Pour compat avec la demo, on garde l'ancien comportement mais on le marque non garanti
+  if (parsed.data.fromAsset === "BTC") {
+    // BTC → XOF direct: amount en sats string (base units BTC = sats)
     amountBaseUnits = String(order.amount_sats as number);
+  } else {
+    // USDT → XOF: besoin de micro-units USDT
+    const tradingFilled = db.prepare("SELECT * FROM trading_orders WHERE order_id=? AND status IN ('filled','completed','success','executed') ORDER BY created_at DESC LIMIT 1").get(orderId) as Record<string, unknown> | undefined;
+    if (tradingFilled) {
+      // Trading confirmé → on estime USDT depuis la quote (receive_quantity) ou depuis amount_sats * price
+      const qrow = tradingFilled.quote_id ? db.prepare("SELECT * FROM trading_quotes WHERE id=?").get(tradingFilled.quote_id as string) as Record<string, unknown> | undefined : null;
+      const rawQ = qrow ? (()=>{ try{return JSON.parse(qrow.raw_json as string);}catch{return null;}})() as Record<string, unknown> | null : null;
+      const recv = (rawQ as Record<string, unknown> | null)?.data ? String((((rawQ as Record<string, unknown>).data as Record<string, unknown>)?.exchange as Record<string, unknown> | undefined)?.receive_quantity ?? "") : "";
+      if (recv && parseFloat(recv) > 0) {
+        // receive_quantity est en USDT major units string → micro-units
+        amountBaseUnits = String(Math.round(parseFloat(recv) * 1_000_000));
+      } else {
+        // Fallback: estimation sats -> BTC -> USDT via prix trading
+        const priceStr = String(qrow?.price ?? "");
+        const price = parseFloat(priceStr);
+        if (price > 0) {
+          const btc = (order.amount_sats as number) / 100_000_000;
+          const usdt = btc * price;
+          amountBaseUnits = String(Math.round(usdt * 1_000_000));
+        } else {
+          return res.status(409).json({ error: "Trading confirmé mais prix indisponible — impossible de coter payout USDT", hint: "Relire GET /api/orders/:id/trading/status" });
+        }
+      }
+    } else {
+      // Pas de trading — on cote depuis le solde USDT estimé via fx.ts (BTC->USDT ~ market)
+      // On utilise une estimation prudente: sats → BTC → USDT (prix live), puis micro-units
+      try {
+        const { getBtcPriceXof } = await import("../fx.js");
+        // getBtcPriceXof donne BTC/XOF; pour USDT on approxime USDT/XOF ~ 600
+        const btc = (order.amount_sats as number) / 100_000_000;
+        // On récupère le prix BTC/USDT live
+        const pr = await bitnobRequest<Record<string, unknown>>("GET", "/api/trading/prices");
+        let btcUsdt: number | null = null;
+        if (pr.ok) {
+          const d = (pr.data as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
+          const arr = (d?.prices ?? []) as Array<Record<string, unknown>>;
+          for (const p of arr) if (String(p.base_currency).toUpperCase()==="BTC" && String(p.quote_currency).toUpperCase()==="USDT") btcUsdt = parseFloat(String(p.price));
+        }
+        if (btcUsdt && btcUsdt > 5000) {
+          amountBaseUnits = String(Math.round(btc * btcUsdt * 1_000_000));
+        } else {
+          return res.status(409).json({ error: "Montant USDT indisponible — conversion BTC->USDT non confirmée et prix live indisponible", hint: "Exécutez d'abord POST /api/orders/:id/trading/quote → /trading/execute, ou cotez en fromAsset=BTC." });
+        }
+      } catch {
+        return res.status(409).json({ error: "Montant USDT indisponible pour payout", hint: "Trading BTC→USDT requis avant payout USDT, ou utilisez fromAsset=BTC." });
+      }
+    }
   }
+  // Payout quote: amount = crypto base units string, from_asset, to_currency, country, source, reference
   const r = await bitnobRequest<Record<string, unknown>>("POST", "/api/payouts/quotes", {
     from_asset: parsed.data.fromAsset,
     to_currency: parsed.data.toCurrency,
-    source: "offchain",
     amount: amountBaseUnits,
-    payment_reason: "vendor_payment",
-    reference,
     country: parsed.data.country,
+    source: "offchain",
+    reference,
   });
   if (!r.ok) return res.status(502).json({ error: "Bitnob payout quote", detail: r.error, status: r.status });
   const data = (r.data as Record<string, unknown>)?.data ?? r.data;
