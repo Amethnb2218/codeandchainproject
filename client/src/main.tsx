@@ -354,8 +354,10 @@ function NewOrder(){
                       {qrSrc ? <img src={qrSrc} alt="QR Lightning" width={220} height={220} style={{borderRadius:8}} onError={(e)=>{ (e.target as HTMLImageElement).style.display="none"; }}/> : null}
                       {!qrSrc && <div className="mono" style={{fontSize:11, wordBreak:"break-all", padding:8, textAlign:"center"}}>{bolt11 ? bolt11.slice(0,48)+"…" : "Facture en génération…"}</div>}
                       <div className="mono" style={{marginTop:6, fontSize:11, wordBreak:"break-all", background:"#FFF1E6", padding:"6px 8px", borderRadius:8, width:"100%", textAlign:"center"}}>{bolt11 ? bolt11.slice(0,36)+"…"+bolt11.slice(-8) : "—"}</div>
-                      <button type="button" className="btn btn-sm" style={{marginTop:6}} onClick={()=>copy(bolt11,"bolt11")}>{copied==="bolt11" ? "Copié ✓" : <><IcoCopy/> Copier code</>}</button>
-                      <div style={{fontSize:11, color:"var(--forest)", fontWeight:700, marginTop:6}}>QR — pour paiement physique (scan en boutique)</div>
+                      {bolt11 && <a href={`lightning:${bolt11}`} className="btn btn-coral btn-sm" style={{marginTop:6, justifyContent:"center", textDecoration:"none", width:"100%"}}>⚡ Payer avec Blink</a>}
+                      {bolt11 && <a href={`https://blink.sv?lightning=${encodeURIComponent(bolt11)}`} target="_blank" rel="noreferrer" className="btn btn-sm" style={{justifyContent:"center", width:"100%"}}>Ouvrir dans Blink.sv</a>}
+                      <button type="button" className="btn btn-sm" style={{marginTop:4, width:"100%", justifyContent:"center"}} onClick={()=>copy(bolt11,"bolt11")}>{copied==="bolt11" ? "Copié ✓" : <><IcoCopy/> Copier code</>}</button>
+                      <div style={{fontSize:11, color:"var(--forest)", fontWeight:700, marginTop:6}}>QR — physique (Blink scanne direct) · Lien à droite = distance</div>
                     </div>
                     <div style={{display:"grid", gap:8, alignContent:"start"}}>
                       <label className="field"><span className="field-label" style={{fontWeight:700, color:"var(--forest)"}}>Lien — pour paiement à distance</span>
@@ -747,11 +749,20 @@ function PayPage(){
     }catch(ex){ setErr((ex as Error).message + " — /health doit afficher Bitnob Configuré"); } finally{ setLoading(false); }
   };
 
-  // Poll: si payé → phase paid
+  const [deliveryCode, setDeliveryCode] = React.useState<null | {code?:string; display?:string; hint?:string; expiresAt?:string; message?:string}>(null);
+  // Poll: si payé → phase paid + récupère CODE si flux livraison
   React.useEffect(()=>{
     if(phase!=="invoice" || !orderId) return;
     const t = setInterval(async()=>{
-      try{ const j = await api<Record<string,unknown>>(`/api/orders/${orderId}`); if(String((j.order as Record<string,unknown>).status)!=="awaiting_payment") setPhase("paid"); }catch{ void 0; }
+      try{
+        const j = await api<Record<string,unknown>>(`/api/orders/${orderId}`);
+        const st = String((j.order as Record<string,unknown>).status);
+        if(st!=="awaiting_payment" && st!=="created") setPhase("paid");
+        // Si livraison et funded/delivery_* → récupère le CODE pour que le client le voie
+        if(["funded","delivery_declared","delivery_confirmed"].includes(st)){
+          try{ const c = await api<Record<string,unknown>>(`/api/orders/${orderId}/delivery-code`); if(c.code) setDeliveryCode(c as never); else if(c.codeHint) setDeliveryCode({hint: c.codeHint as string}); }catch{ void 0; }
+        }
+      }catch{ void 0; }
     }, 2500);
     return ()=>clearInterval(t);
   },[phase, orderId]);
@@ -788,27 +799,53 @@ function PayPage(){
         <div className="panel panel-pad" style={{marginTop:14, display:"grid", gap:12}}>
           <div style={{textAlign:"center"}}>
             <div className="badge" style={{background:"var(--ok)", color:"#fff"}}>⚡ Facture prête — {Number(amount).toLocaleString("fr-FR")} FCFA</div>
-            <div style={{fontSize:11, color:"var(--ink-60)", marginTop:6}}>Scan QR ou copie le code Bolt11</div>
+            <div style={{fontSize:11, color:"var(--ink-60)", marginTop:6}}>Paie avec Blink ou scan QR — même facture</div>
           </div>
           <div style={{display:"grid", placeItems:"center", background:"#fff", border:"1px solid var(--line)", borderRadius:12, padding:12}}>
             {qrSrc ? <img src={qrSrc} alt="QR Lightning" width={220} height={220} style={{borderRadius:8}}/> : <div className="mono" style={{fontSize:11, wordBreak:"break-all"}}>{invoice.bolt11}</div>}
           </div>
-          <div className="mono" style={{fontSize:11, wordBreak:"break-all", background:"#FFF1E6", padding:8, borderRadius:8, border:"1px solid #FFC9A8"}}>{invoice.bolt11}</div>
-          <div style={{display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap"}}>
-            <button className="btn" onClick={async()=>{ try{ await navigator.clipboard.writeText(invoice.bolt11);}catch{ void 0; }}}><IcoCopy/> Copier code</button>
-            {orderId && <button className="btn" onClick={async()=>{ try{ await api(`/api/orders/${orderId}/demo/confirm-payment`, {method:"POST"}); setPhase("paid"); }catch(ex){ setErr((ex as Error).message); }}}>Simuler paiement (DEMO)</button>}
+          <a href={`lightning:${invoice.bolt11}`} className="btn btn-coral" style={{justifyContent:"center", height:46, fontSize:15, fontWeight:800, textDecoration:"none"}}>⚡ Payer avec Blink / Wallet</a>
+          <div style={{display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap", marginTop:-4}}>
+            <a href={`https://blink.sv?lightning=${encodeURIComponent(invoice.bolt11)}`} target="_blank" rel="noreferrer" className="btn btn-sm">Ouvrir dans Blink.sv</a>
+            <button className="btn btn-sm" onClick={async()=>{ try{ await navigator.clipboard.writeText(invoice.bolt11);}catch{ void 0; }}}><IcoCopy/> Copier code</button>
           </div>
-          <div className="notice" style={{fontSize:12, textAlign:"center"}}>Après paiement, le vendeur voit <strong>REÇU</strong> instantanément. Lien se renouvelle tout seul à chaque paiement (nouvelle facture).</div>
-          <button className="btn btn-sm" style={{justifyContent:"center"}} onClick={()=>{ setPhase("input"); setInvoice(null); setOrderId(null); }}>← Nouveau paiement</button>
+          <div className="mono" style={{fontSize:10, wordBreak:"break-all", background:"#FFF1E6", padding:8, borderRadius:8, border:"1px solid #FFC9A8"}}>{invoice.bolt11}</div>
+          <div className="notice" style={{fontSize:12, textAlign:"center"}}>Blink détecte le montant automatiquement. Après paiement, le vendeur voit <strong>REÇU</strong> et le versement XOF se débloque.</div>
+          <button className="btn btn-sm" style={{justifyContent:"center"}} onClick={()=>{ setPhase("input"); setInvoice(null); setOrderId(null); setDeliveryCode(null); }}>← Nouveau paiement</button>
           {err && <div className="error">{err}</div>}
         </div>
       )}
 
       {phase==="paid" && (
-        <div className="panel panel-pad" style={{marginTop:14, textAlign:"center", background:"#EAF6EC", borderColor:"var(--ok)"}}>
-          <div style={{fontWeight:800, color:"var(--ok)", fontSize:18}}>✅ Paiement reçu !</div>
-          <div style={{fontSize:13, color:"var(--ink-60)", marginTop:6}}>{Number(amount).toLocaleString("fr-FR")} FCFA · Merci — ton paiement est confirmé.</div>
-          <button className="btn btn-coral" style={{marginTop:12, justifyContent:"center"}} onClick={()=>{ setPhase("input"); setInvoice(null); setOrderId(null); }}>Payer à nouveau</button>
+        <div style={{display:"grid", gap:12, marginTop:14}}>
+          <div className="panel panel-pad" style={{textAlign:"center", background:"#EAF6EC", borderColor:"var(--ok)"}}>
+            <div style={{fontWeight:800, color:"var(--ok)", fontSize:18}}>✅ Paiement reçu — {Number(amount).toLocaleString("fr-FR")} FCFA</div>
+            <div style={{fontSize:13, color:"var(--ink-60)", marginTop:6}}>Fonds séquestrés — en attente du livreur.</div>
+          </div>
+          <div className="panel panel-pad" style={{borderColor:"#f97316", background:"#FFF7ED"}}>
+            <div className="section-title" style={{color:"#7c2d12"}}>📦 Livraison — ton CODE à donner au livreur</div>
+            {!deliveryCode?.code ? (
+              <>
+                <div style={{fontSize:13, color:"var(--ink-60)", marginTop:6}}>Quand le livreur arrive chez toi, clique ci-dessous pour générer ton CODE (6 chiffres, 2 min, 3 essais).</div>
+                <button className="btn btn-coral" style={{marginTop:10, width:"100%", justifyContent:"center", height:44, fontWeight:800}} onClick={async()=>{
+                  if(!orderId) return; setErr(null);
+                  try{ const c = await api<{code:string;display:string;message:string;expiresAt:string}>(`/api/orders/${orderId}/delivery-code`, {method:"POST"}); setDeliveryCode(c); }catch(ex){ setErr((ex as Error).message); }
+                }}>J'ai bien reçu — générer mon CODE</button>
+                <div style={{fontSize:11, color:"var(--ink-40)", marginTop:6, textAlign:"center"}}>Tu es le seul à voir ce CODE — dicte-le au livreur par téléphone, il le redicte au vendeur.</div>
+              </>
+            ) : (
+              <>
+                <div style={{textAlign:"center", background:"#fff", border:"2px solid var(--coral)", borderRadius:14, padding:14, marginTop:8}}>
+                  <div style={{fontSize:11, letterSpacing:".1em", color:"var(--ink-40)", fontWeight:700}}>DITES AU LIVREUR :</div>
+                  <div className="mono" style={{fontSize:32, fontWeight:800, letterSpacing:".18em", color:"var(--forest)", marginTop:4}}>{deliveryCode.display ?? `${deliveryCode.code!.slice(0,3)} ${deliveryCode.code!.slice(3)}`}</div>
+                  <div style={{fontSize:11, color:"var(--ink-60)"}}>Expire {deliveryCode.expiresAt ? new Date(deliveryCode.expiresAt).toLocaleTimeString("fr-FR") : "dans 2 min"} · 3 essais</div>
+                </div>
+                <div className="notice" style={{marginTop:8, fontSize:12, textAlign:"center"}}>Dicte ce CODE au livreur. Dès que le vendeur le saisit → <strong>Vérifié = Argent débloqué</strong> → versement XOF.</div>
+              </>
+            )}
+            {err && <div className="error" style={{marginTop:8}}>{err}</div>}
+          </div>
+          <button className="btn btn-sm" style={{justifyContent:"center"}} onClick={()=>{ setPhase("input"); setInvoice(null); setOrderId(null); setDeliveryCode(null); }}>Payer à nouveau</button>
         </div>
       )}
     </div>
