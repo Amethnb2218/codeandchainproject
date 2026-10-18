@@ -245,8 +245,9 @@ function Home(){
 function NewOrder(){
   const nav = useNavigate();
   const [amountFcfa, setAmountFcfa] = React.useState(10000);
+  const [phone, setPhone] = React.useState("771234567");
   const [flow, setFlow] = React.useState<"qr"|"link">("link");
-  const [result, setResult] = React.useState<null | {id:string; amountFcfa:number; payUrl:string; flow:string; invoice?:{bolt11:string}}>(null);
+  const [result, setResult] = React.useState<null | {id:string; amountFcfa:number; payUrl:string; flow:string; phone:string; invoice?:{bolt11:string; fallback?:boolean}}>(null);
   const [err, setErr] = React.useState<string|null>(null);
   const [loading, setLoading] = React.useState(false);
   const [fixedCopied, setFixedCopied] = React.useState(false);
@@ -261,21 +262,23 @@ function NewOrder(){
     if(e) e.preventDefault();
     if(!amountFcfa || amountFcfa<500){ setErr("Minimum 500 FCFA"); return; }
     if(amountFcfa>10_000_000){ setErr("Maximum 10 000 000 FCFA"); return; }
+    const cleanPhone = phone.replace(/\D/g,"").slice(-9);
+    if(!cleanPhone || cleanPhone.length<9){ setErr("Numéro vendeur requis (9 chiffres, ex 771234567) — pour fallback Wave si Lightning indisponible"); return; }
     setErr(null); setLoading(true);
     try{
-      // Sandbox réel — flow qr = boutique (direct, sans CODE), link = livraison (séquestré + CODE)
       const j = await api<{id:string}>(`/api/orders`, { method:"POST", body: JSON.stringify({
         amountFcfa: Number(amountFcfa),
         description: flow==="qr" ? "Paiement boutique (QR)" : "Paiement livraison (séquestré)",
         sellerLabel: "Vendeur",
         beneficiaryName: "Vendeur",
+        beneficiaryPhoneHint: cleanPhone,
         demoMode: false,
         flow,
       })});
-      let inv: {bolt11:string} | undefined;
-      try{ const r = await api<{demo?:boolean; invoice:{bolt11:string}}>(`/api/orders/${j.id}/invoice`, {method:"POST"}); inv = r.invoice; }catch(ex){ setErr(`Commande créée (${j.id}) mais facture Bitnob: ${(ex as Error).message} — vérifie /health → Bitnob Configuré`); }
+      let inv: {bolt11:string; fallback?:boolean} | undefined;
+      try{ const r = await api<{demo?:boolean; fallback?:boolean; invoice:{bolt11:string; fallback?:boolean}}>(`/api/orders/${j.id}/invoice`, {method:"POST"}); inv = { ...r.invoice, fallback: !!(r.fallback || (r.invoice as {fallback?:boolean})?.fallback) }; }catch(ex){ setErr(`Commande créée (${j.id}) mais facture Bitnob: ${(ex as Error).message} — vérifie /health → Bitnob Configuré`); }
       const payUrl = `${origin}/orders/${j.id}`;
-      setResult({id: j.id, amountFcfa: Number(amountFcfa), payUrl, flow, invoice: inv});
+      setResult({id: j.id, amountFcfa: Number(amountFcfa), payUrl, flow, phone: cleanPhone, invoice: inv });
       if(inv?.bolt11) setCopied(null);
     }catch(ex){ setErr((ex as Error).message);} finally{ setLoading(false);}
   };
@@ -329,14 +332,24 @@ function NewOrder(){
             </button>
           </div>
 
-          <label className="field">
-            <span className="field-label" style={{fontSize:14, fontWeight:700}}>Montant (FCFA) *</span>
-            <input className="input" type="number" value={amountFcfa} onChange={e=>setAmountFcfa(Number(e.target.value))} min={500} max={10_000_000} required autoFocus inputMode="numeric" style={{fontSize:22, fontWeight:700, height:52, letterSpacing:"-0.02em"}} placeholder="10 000"/>
-            <span className="field-hint" style={{fontSize:12}}><strong>{Number(amountFcfa).toLocaleString("fr-FR")} FCFA</strong> ≈ {estSats.toLocaleString("fr-FR")} sats · taux Bitnob verrouillé 2 min (serveur)</span>
-            <span style={{display:"flex", gap:6, marginTop:8, flexWrap:"wrap"}}>
-              {[5000,10000,25000,50000].map(v=> <button key={v} type="button" className="btn btn-sm" style={{background: amountFcfa===v ? "var(--forest)":undefined, color: amountFcfa===v ? "var(--ivory)":undefined}} onClick={()=>setAmountFcfa(v)}>{v.toLocaleString("fr-FR")} FCFA</button>)}
-            </span>
-          </label>
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:10}}>
+            <label className="field">
+              <span className="field-label" style={{fontSize:14, fontWeight:700}}>Montant (FCFA) *</span>
+              <input className="input" type="number" value={amountFcfa} onChange={e=>setAmountFcfa(Number(e.target.value))} min={500} max={10_000_000} required inputMode="numeric" style={{fontSize:22, fontWeight:700, height:52, letterSpacing:"-0.02em"}} placeholder="10 000"/>
+            </label>
+            <label className="field">
+              <span className="field-label" style={{fontSize:14, fontWeight:700}}>Ton numéro (Wave) *</span>
+              <div style={{display:"flex", gap:6}}>
+                <span style={{display:"grid", placeItems:"center", padding:"0 10px", background:"#fff", border:"1px solid var(--line)", borderRadius:12, fontWeight:700, fontSize:13, color:"var(--forest)"}}>🇸🇳 +221</span>
+                <input className="input mono" value={phone} onChange={e=>setPhone(e.target.value.replace(/\D/g,"").slice(0,9))} required inputMode="numeric" placeholder="771234567" style={{fontWeight:700, letterSpacing:".04em"}}/>
+              </div>
+              <span className="field-hint">Pour recevoir en XOF — fallback si Lightning indisponible</span>
+            </label>
+          </div>
+          <span className="field-hint" style={{fontSize:12}}><strong>{Number(amountFcfa).toLocaleString("fr-FR")} FCFA</strong> ≈ {estSats.toLocaleString("fr-FR")} sats · taux Bitnob verrouillé 2 min (serveur)</span>
+          <span style={{display:"flex", gap:6, marginTop:6, flexWrap:"wrap"}}>
+            {[5000,10000,25000,50000].map(v=> <button key={v} type="button" className="btn btn-sm" style={{background: amountFcfa===v ? "var(--forest)":undefined, color: amountFcfa===v ? "var(--ivory)":undefined}} onClick={()=>setAmountFcfa(v)}>{v.toLocaleString("fr-FR")} FCFA</button>)}
+          </span>
 
           {err && <div className="error">{err}</div>}
 
@@ -366,13 +379,20 @@ function NewOrder(){
                 <div style={{display:"grid", gap:10}}>
                   <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:12}}>
                     <div style={{display:"grid", placeItems:"center", background:"#fff", borderRadius:12, padding:10, border:"1px solid var(--line)"}}>
-                      {qrSrc ? <img src={qrSrc} alt="QR Lightning" width={220} height={220} style={{borderRadius:8}} onError={(e)=>{ (e.target as HTMLImageElement).style.display="none"; }}/> : null}
-                      {!qrSrc && <div className="mono" style={{fontSize:11, wordBreak:"break-all", padding:8, textAlign:"center"}}>{bolt11 ? bolt11.slice(0,48)+"…" : "Facture en génération…"}</div>}
-                      <div className="mono" style={{marginTop:6, fontSize:11, wordBreak:"break-all", background:"#FFF1E6", padding:"6px 8px", borderRadius:8, width:"100%", textAlign:"center"}}>{bolt11 ? bolt11.slice(0,36)+"…"+bolt11.slice(-8) : "—"}</div>
-                      {bolt11 && <a href={`lightning:${bolt11}`} className="btn btn-coral btn-sm" style={{marginTop:6, justifyContent:"center", textDecoration:"none", width:"100%"}}>⚡ Payer avec Blink</a>}
-                      {bolt11 && <a href={`https://blink.sv?lightning=${encodeURIComponent(bolt11)}`} target="_blank" rel="noreferrer" className="btn btn-sm" style={{justifyContent:"center", width:"100%"}}>Ouvrir dans Blink.sv</a>}
-                      <button type="button" className="btn btn-sm" style={{marginTop:4, width:"100%", justifyContent:"center"}} onClick={()=>copy(bolt11,"bolt11")}>{copied==="bolt11" ? "Copié ✓" : <><IcoCopy/> Copier code</>}</button>
-                      <div style={{fontSize:11, color:"var(--forest)", fontWeight:700, marginTop:6}}>QR — physique (Blink scanne direct) · Lien à droite = distance</div>
+                      {bolt11 && result.invoice?.fallback ? (
+                        <div style={{textAlign:"center", padding:8}}>
+                          <div style={{fontSize:11, color:"#92400E", fontWeight:700, background:"#FFFBEB", border:"1px solid #FDE68A", borderRadius:8, padding:"6px 8px"}}>⚠️ Bitnob indisponible — fallback Wave</div>
+                          <div style={{fontWeight:800, fontSize:18, color:"var(--forest)", marginTop:10, letterSpacing:".04em"}}>📱 +221 {result.phone}</div>
+                          <div style={{fontSize:11, color:"var(--ink-60)", marginTop:4}}>Paiement Wave direct — vendeur reçoit en <strong>CFA</strong></div>
+                          <button type="button" className="btn btn-coral btn-sm" style={{marginTop:8, width:"100%", justifyContent:"center"}} onClick={()=>copy(`+221${result.phone}`,"bolt11")}>{copied==="bolt11" ? "Copié ✓" : <>📋 Copier numéro Wave</>}</button>
+                          <div style={{fontSize:11, color:"var(--ink-40)", marginTop:6}}>Lightning sera réactivé dès que Bitnob répond — même montant.</div>
+                        </div>
+                      ) : qrSrc ? <img src={qrSrc} alt="QR Lightning" width={220} height={220} style={{borderRadius:8}} onError={(e)=>{ (e.target as HTMLImageElement).style.display="none"; }}/> : <div className="mono" style={{fontSize:11, wordBreak:"break-all", padding:8, textAlign:"center"}}>{bolt11 ? bolt11.slice(0,48)+"…" : "Facture en génération…"}</div>}
+                      {!result.invoice?.fallback && bolt11 && <div className="mono" style={{marginTop:6, fontSize:11, wordBreak:"break-all", background:"#FFF1E6", padding:"6px 8px", borderRadius:8, width:"100%", textAlign:"center"}}>{bolt11.slice(0,36)+"…"+bolt11.slice(-8)}</div>}
+                      {!result.invoice?.fallback && bolt11 && <a href={`lightning:${bolt11}`} className="btn btn-coral btn-sm" style={{marginTop:6, justifyContent:"center", textDecoration:"none", width:"100%"}}>⚡ Payer avec Blink</a>}
+                      {!result.invoice?.fallback && bolt11 && <a href={`https://blink.sv?lightning=${encodeURIComponent(bolt11)}`} target="_blank" rel="noreferrer" className="btn btn-sm" style={{justifyContent:"center", width:"100%"}}>Ouvrir dans Blink.sv</a>}
+                      {!result.invoice?.fallback && bolt11 && <button type="button" className="btn btn-sm" style={{marginTop:4, width:"100%", justifyContent:"center"}} onClick={()=>copy(bolt11,"bolt11")}>{copied==="bolt11" ? "Copié ✓" : <><IcoCopy/> Copier code</>}</button>}
+                      <div style={{fontSize:11, color:"var(--forest)", fontWeight:700, marginTop:6}}>{result.invoice?.fallback ? "Fallback Wave — vendeur reçoit en CFA" : "QR — physique (Blink valide) · Lien à droite = distance"}</div>
                     </div>
                     <div style={{display:"grid", gap:8, alignContent:"start"}}>
                       <label className="field"><span className="field-label" style={{fontWeight:700, color:"var(--forest)"}}>Lien — pour paiement à distance</span>

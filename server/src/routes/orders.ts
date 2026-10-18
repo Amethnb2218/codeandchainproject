@@ -149,13 +149,14 @@ router.post("/:id/invoice", async (req, res) => {
     data?: { id?: string; payment_hash?: string; request?: string; payRequest?: string; bolt11?: string; amount_sat?: string; status?: string; expires_at?: string; created_at?: string };
   }>("POST", "/api/lightning/invoices", body);
   if (!r.ok) {
-    // Fallback QR fonctionnel même si Bitnob sandbox temporairement down — évite écran 502 bloquant jury
-    console.warn("[invoice] Bitnob fail -> fallback DEMO", r.status, r.error);
-    const fakeBolt11 = `lnbc${amountSats}n1fallback_${reference.slice(0, 8)}_SENTABAKH_DEMO_FALLBACK`;
+    // Ne PAS renvoyer de faux lnbc... invalide (Blink refuse "adresse invalide") — renvoyer sans bolt11 + hint téléphone
+    console.warn("[invoice] Bitnob fail -> fallback téléphone (pas de faux lnbc)", r.status, r.error);
+    const phoneHint = String((order as Record<string,unknown>).beneficiary_phone_hint ?? "");
+    // On stocke un bolt11 vide + raw pour tracer, status pending_demo_phone_fallback
     db.prepare(
       "INSERT INTO lightning_invoices (id,order_id,bolt11,amount_sats,status,reference,expires_at,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)"
-    ).run(invoiceId, orderId, fakeBolt11, amountSats, "pending_demo", reference, expiresAt, JSON.stringify({ fallback: true, bitnobError: r.error, bitnobStatus: r.status, detail: "Bitnob indisponible — QR démo fonctionnel pour tester Flux A/B + Blink + CODE" }), now);
-    return res.json({ demo: true, fallback: true, bitnobError: r.error, bitnobStatus: r.status, invoice: { id: invoiceId, bolt11: fakeBolt11, reference, status: "pending_demo", expiresAt, amountSats, label: "QR démo (Bitnob indisponible — fallback)" } });
+    ).run(invoiceId, orderId, "", amountSats, "pending_demo", reference, expiresAt, JSON.stringify({ fallback: true, fallbackReason: "phone", bitnobError: r.error, bitnobStatus: r.status, phoneHint, detail: "Bitnob indisponible — fallback vers numéro Wave vendeur. Ne pas utiliser lnbc fallback (rejeté par Blink)." }), now);
+    return res.json({ demo: true, fallback: true, fallbackReason: "phone", phoneHint, bitnobError: r.error, bitnobStatus: r.status, invoice: { id: invoiceId, bolt11: "", reference, status: "pending_demo", expiresAt, amountSats, label: `Bitnob indisponible — payer le vendeur au ${phoneHint || "numéro indiqué"} (Wave) — ${amountSats} sats ~ ${order.amount_fcfa ?? ""} FCFA` } });
   }
   // Reponse Bitnob: { success, data: { id, payment_hash, request (BOLT11), amount_sat, status, expires_at } }
   const data = (r.data as Record<string, unknown>)?.data as Record<string, unknown> | undefined;
