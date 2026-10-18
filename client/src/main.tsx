@@ -820,7 +820,8 @@ function Health(){
   const [data, setData] = React.useState<Record<string,unknown>|null>(null);
   const [err, setErr] = React.useState<string|null>(null);
   React.useEffect(()=>{
-    fetch(`${import.meta.env.VITE_API_URL ?? "http://localhost:4000"}/api/preflight`).then(r=>r.json()).then(setData).catch(()=> setErr("API non joignable"));
+    // Même logique que api() — relatif en prod (Render), proxy Vite en dev
+    api<Record<string,unknown>>("/api/preflight").then(setData).catch(()=> setErr("API non joignable — vérifie que le serveur tourne"));
   },[]);
   const bitnob = (data as Record<string,unknown> | null)?.bitnob as Record<string,unknown> | undefined;
   const configured = Boolean(bitnob?.configured);
