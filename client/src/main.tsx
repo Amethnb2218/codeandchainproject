@@ -245,7 +245,8 @@ function Home(){
 function NewOrder(){
   const nav = useNavigate();
   const [amountFcfa, setAmountFcfa] = React.useState(10000);
-  const [result, setResult] = React.useState<null | {id:string; amountFcfa:number; payUrl:string; invoice?:{bolt11:string}}>(null);
+  const [flow, setFlow] = React.useState<"qr"|"link">("link");
+  const [result, setResult] = React.useState<null | {id:string; amountFcfa:number; payUrl:string; flow:string; invoice?:{bolt11:string}}>(null);
   const [err, setErr] = React.useState<string|null>(null);
   const [loading, setLoading] = React.useState(false);
   const [fixedCopied, setFixedCopied] = React.useState(false);
@@ -262,19 +263,19 @@ function NewOrder(){
     if(amountFcfa>10_000_000){ setErr("Maximum 10 000 000 FCFA"); return; }
     setErr(null); setLoading(true);
     try{
-      // Sandbox réel par défaut (Bitnob) — plus de demoMode hardcodé
+      // Sandbox réel — flow qr = boutique (direct, sans CODE), link = livraison (séquestré + CODE)
       const j = await api<{id:string}>(`/api/orders`, { method:"POST", body: JSON.stringify({
         amountFcfa: Number(amountFcfa),
-        description: "Paiement",
+        description: flow==="qr" ? "Paiement boutique (QR)" : "Paiement livraison (séquestré)",
         sellerLabel: "Vendeur",
         beneficiaryName: "Vendeur",
         demoMode: false,
-        flow: "link",
+        flow,
       })});
       let inv: {bolt11:string} | undefined;
       try{ const r = await api<{demo?:boolean; invoice:{bolt11:string}}>(`/api/orders/${j.id}/invoice`, {method:"POST"}); inv = r.invoice; }catch(ex){ setErr(`Commande créée (${j.id}) mais facture Bitnob: ${(ex as Error).message} — vérifie /health → Bitnob Configuré`); }
       const payUrl = `${origin}/orders/${j.id}`;
-      setResult({id: j.id, amountFcfa: Number(amountFcfa), payUrl, invoice: inv});
+      setResult({id: j.id, amountFcfa: Number(amountFcfa), payUrl, flow, invoice: inv});
       if(inv?.bolt11) setCopied(null);
     }catch(ex){ setErr((ex as Error).message);} finally{ setLoading(false);}
   };
@@ -314,6 +315,20 @@ function NewOrder(){
             <p style={{margin:0, color:"var(--ink-60)", fontSize:13}}>Tape le montant en <strong>FCFA</strong> → <strong>Recevoir</strong>. Tu obtiens <strong>automatiquement QR + lien</strong> (même facture Lightning) : QR pour le client en face, lien pour le client à distance.</p>
           </div>
 
+          {/* Choix flux : boutique QR direct vs livraison séquestrée */}
+          <div style={{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8}}>
+            <button type="button" onClick={()=>setFlow("qr")} style={{textAlign:"left", padding:"12px", borderRadius:12, border: flow==="qr" ? "2px solid var(--forest)" : "1px solid var(--line)", background: flow==="qr" ? "#EAF6EC" : "#fff", cursor:"pointer"}}>
+              <div style={{fontWeight:800, fontSize:13, color:"var(--forest)"}}>🏪 Boutique — QR</div>
+              <div style={{fontSize:11, color:"var(--ink-60)", marginTop:2}}>Client scanne en face</div>
+              <div style={{fontSize:11, color:"var(--ok)", fontWeight:700, marginTop:4}}>10 000 FCFA REÇUS — direct, pas de CODE</div>
+            </button>
+            <button type="button" onClick={()=>setFlow("link")} style={{textAlign:"left", padding:"12px", borderRadius:12, border: flow==="link" ? "2px solid var(--coral)" : "1px solid var(--line)", background: flow==="link" ? "#FFF7ED" : "#fff", cursor:"pointer"}}>
+              <div style={{fontWeight:800, fontSize:13, color:"var(--forest)"}}>🚚 Livraison — Lien</div>
+              <div style={{fontSize:11, color:"var(--ink-60)", marginTop:2}}>Envoie lien WhatsApp / Insta</div>
+              <div style={{fontSize:11, color:"#c2410c", fontWeight:700, marginTop:4}}>Fonds SÉQUESTRÉS → CODE 6ch</div>
+            </button>
+          </div>
+
           <label className="field">
             <span className="field-label" style={{fontSize:14, fontWeight:700}}>Montant (FCFA) *</span>
             <input className="input" type="number" value={amountFcfa} onChange={e=>setAmountFcfa(Number(e.target.value))} min={500} max={10_000_000} required autoFocus inputMode="numeric" style={{fontSize:22, fontWeight:700, height:52, letterSpacing:"-0.02em"}} placeholder="10 000"/>
@@ -326,10 +341,10 @@ function NewOrder(){
           {err && <div className="error">{err}</div>}
 
           <button className="btn btn-coral" disabled={loading} style={{justifyContent:"center", height:50, fontSize:16, fontWeight:800}}>
-            {loading ? "Génération…" : "Recevoir — QR + Lien"} <IcoArrow/>
+            {loading ? "Génération…" : flow==="qr" ? "Recevoir — QR boutique" : "Recevoir — Lien livraison"} <IcoArrow/>
           </button>
 
-          <div style={{fontSize:11, color:"var(--ink-40)"}}>Même facture Lightning pour QR et lien · pas de choix à faire · VENDEUR seul (CLIENT/LIVREUR sans compte)</div>
+          <div style={{fontSize:11, color:"var(--ink-40)"}}>{flow==="qr" ? "🏪 Boutique : client paie → tu reçois direct (fonds non bloqués, pas de CODE)." : "🚚 Livraison : fonds SÉQUESTRÉS → cliente confirme → CODE 6ch → tu vérifies → débloqué."} · VENDEUR seul (CLIENT/LIVREUR sans compte)</div>
         </form>
 
         <div style={{display:"grid", gap:12, alignContent:"start"}}>
@@ -743,7 +758,8 @@ function PayPage(){
     if(amount>10_000_000){ setErr("Maximum 10 000 000 FCFA"); return; }
     setErr(null); setLoading(true);
     try{
-      const j = await api<{id:string}>(`/api/orders`, {method:"POST", body: JSON.stringify({amountFcfa: Number(amount), description: `Paiement ${nice}`, sellerLabel: nice, beneficiaryName: nice, demoMode:false, flow:"qr"})});
+      // Lien fixe = livraison à distance → fonds SÉQUESTRÉS → CODE 6ch (pas boutique direct)
+      const j = await api<{id:string}>(`/api/orders`, {method:"POST", body: JSON.stringify({amountFcfa: Number(amount), description: `Paiement ${nice} (livraison)`, sellerLabel: nice, beneficiaryName: nice, demoMode:false, flow:"link"})});
       const r = await api<{invoice:{bolt11:string}}>(`/api/orders/${j.id}/invoice`, {method:"POST"});
       setOrderId(j.id); setInvoice(r.invoice); setPhase("invoice");
     }catch(ex){ setErr((ex as Error).message + " — /health doit afficher Bitnob Configuré"); } finally{ setLoading(false); }

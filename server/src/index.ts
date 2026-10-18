@@ -79,9 +79,37 @@ app.post("/api/webhooks/bitnob", async (req, res) => {
     return res.status(500).json({ error: "Erreur persistance webhook" });
   }
 
-  // Reconciliation minimale : si payout success, verifier et marquer si possible
+  // Reconciliation : Lightning payé (Bitnob) → funded ; payout success → completed
   const body = req.body as Record<string, unknown>;
   const eventType = (body.type as string) ?? (body.event as string) ?? "";
+  // Lightning : invoice paid / transaction received
+  if (eventType.includes("lightning") || eventType.includes("invoice") || (body as Record<string,unknown>).payment_hash || (body as Record<string,unknown>).bolt11) {
+    try {
+      const db2 = getDb();
+      const ref = (body.reference as string) ?? (body.invoiceReference as string) ?? "";
+      const bId = (body.id as string) ?? (body.invoiceId as string) ?? "";
+      if (ref || bId) {
+        const inv = db2.prepare("SELECT * FROM lightning_invoices WHERE reference=? OR bitnob_invoice_id=? LIMIT 1").get(ref, bId) as Record<string,unknown>|undefined;
+        if (inv && String(inv.status).startsWith("pending")) {
+          db2.prepare("UPDATE lightning_invoices SET status=?, paid_at=?, raw_json=? WHERE id=?").run("paid", new Date().toISOString(), JSON.stringify(body), inv.id as string);
+          const ord = db2.prepare("SELECT status, flow, type FROM orders WHERE id=?").get(inv.order_id as string) as Record<string,unknown>|undefined;
+          if (ord) {
+            const { transitionOrder: tr } = await import("./db/helpers.js");
+            const cur = String(ord.status);
+            if (cur === "awaiting_payment" || cur === "created") {
+              tr(inv.order_id as string, "payment_confirmed" as never, "webhook", "lightning paid");
+              // En sandbox, si pas de trading configuré (DEMO ou test), passer direct à funded pour démo jury
+              // Sinon le vendeur fera trading/quote → execute → funded ; on laisse conversion_pending
+              const hasTrading = (()=>{ try{ return db2.prepare("SELECT 1 FROM trading_quotes LIMIT 1").get(); }catch{return null;}})();
+              // Ne force pas funded si réel — attendre trading
+              if (!config.hasBitnobCredentials()) tr(inv.order_id as string, "funded" as never, "webhook", "funded demo sans trading");
+              else tr(inv.order_id as string, "conversion_pending" as never, "webhook", "en attente conversion BTC->USDT");
+            }
+          }
+        }
+      }
+    } catch (e) { console.error("[webhook] lightning reconcile", e); }
+  }
   if (eventType.includes("payout") && eventType.includes("success")) {
     const ref = (body.reference as string) ?? (body.payoutReference as string) ?? "";
     const quoteId = (body.quoteId as string) ?? (body.quote_id as string) ?? "";

@@ -420,6 +420,9 @@ router.post("/:id/delivery-code", (req, res) => {
   const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
   if (!order) return res.status(404).json({ error: "Commande introuvable" });
   const st = String(order.status);
+  // Flux boutique QR : pas de CODE — fonds non séquestrés, versement direct
+  const flow = String((order as Record<string,unknown>).flow ?? (order as Record<string,unknown>).type ?? "delivery");
+  if (flow === "qr") return res.status(409).json({ error: "Paiement boutique (QR) — fonds non séquestrés, pas de CODE. Versement direct.", hint: "Flux TPE : après REÇU, fais directement Payout XOF (pas de séquestre)." });
   if (!["funded", "delivery_declared", "delivery_confirmed"].includes(st)) {
     return res.status(409).json({ error: `CODE uniquement quand fonds séquestrés / livraison (actuel: ${st})`, hint: "Attendre FONDS SÉQUESTRÉS puis Livreur arrivé" });
   }
@@ -513,7 +516,14 @@ router.post("/:id/payout/quote", async (req, res) => {
   const db = getDb();
   const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
   if (!order) return res.status(404).json({ error: "Commande introuvable" });
-  if ((order.status as string) !== "delivery_confirmed") return res.status(409).json({ error: `Cotation uniquement apres reception confirmee (actuel: ${order.status})` });
+  const flowForQuote = String((order as Record<string,unknown>).flow ?? (order as Record<string,unknown>).type ?? "delivery");
+  const isQrQuote = flowForQuote === "qr";
+  // Boutique QR : pas de séquestre/CODE → cotation dès funded ; Livraison : après CODE vérifié → delivery_confirmed
+  if (isQrQuote) {
+    if (!["funded", "delivery_confirmed", "payout_pending"].includes(order.status as string)) return res.status(409).json({ error: `Cotation Flux A boutique uniquement après REÇUS / funded (actuel: ${order.status})` });
+  } else {
+    if ((order.status as string) !== "delivery_confirmed") return res.status(409).json({ error: `Cotation uniquement apres reception confirmee (actuel: ${order.status}) — Flux livraison: CODE 6ch à vérifier d'abord` });
+  }
   // anti double quote active
   const existing = db.prepare("SELECT * FROM payout_quotes WHERE order_id=? AND status IN ('pending','pending_demo') ORDER BY created_at DESC LIMIT 1").get(orderId);
   if (existing) return res.status(409).json({ error: "Cotation deja en attente" });
@@ -651,8 +661,12 @@ router.post("/:id/payout/initialize", async (req, res) => {
   const db = getDb();
   const order = db.prepare("SELECT * FROM orders WHERE id=?").get(orderId) as Record<string, unknown> | undefined;
   if (!order) return res.status(404).json({ error: "Commande introuvable" });
-  if ((order.status as string) !== "delivery_confirmed" && (order.status as string) !== "payout_pending") {
-    return res.status(409).json({ error: `Init uniquement apres reception (actuel: ${order.status})` });
+  const flowForInit = String((order as Record<string,unknown>).flow ?? (order as Record<string,unknown>).type ?? "delivery");
+  const isQrInit = flowForInit === "qr";
+  if (isQrInit) {
+    if (!["funded", "delivery_confirmed", "payout_pending"].includes(order.status as string)) return res.status(409).json({ error: `Init Flux A boutique uniquement après REÇUS / funded (actuel: ${order.status}) — pas de CODE` });
+  } else {
+    if ((order.status as string) !== "delivery_confirmed" && (order.status as string) !== "payout_pending") return res.status(409).json({ error: `Init uniquement apres reception (actuel: ${order.status})` });
   }
   const quote = db.prepare("SELECT * FROM payout_quotes WHERE id=? AND order_id=?").get(parsed.data.quoteId, orderId) as
     | Record<string, unknown>
