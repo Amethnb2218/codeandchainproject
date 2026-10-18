@@ -17,8 +17,9 @@ function sanitizeHeaders(h: Record<string, string>): Record<string, string> {
 
 export async function bitnobRequest<T>(method: string, path: string, bodyObj?: unknown): Promise<BitnobResult<T>> {
   if (!config.hasBitnobCredentials()) {
-    return { ok: false, error: "BITNOB_CLIENT_ID/SECRET manquants (voir .env.example)", status: 0 };
+    return { ok: false, error: config.bitnobCredentialHint(), status: 0 };
   }
+  // Canonicalisation JSON compacte exigée par Bitnob (pas d'espaces superflus) — on utilise JSON.stringify tel quel
   const body = bodyObj !== undefined ? JSON.stringify(bodyObj) : "";
   const timestamp = nowTimestampSec();
   const nonce = randomNonceHexSync(16);

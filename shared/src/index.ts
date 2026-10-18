@@ -23,7 +23,7 @@ export const ALLOWED_TRANSITIONS: Record<OrderStatus, OrderStatus[]> = {
   awaiting_payment: ["payment_confirmed", "expired", "failed"],
   payment_confirmed: ["conversion_pending", "failed"],
   conversion_pending: ["funded", "failed"],
-  funded: ["delivery_declared", "disputed", "failed"],
+  funded: ["delivery_declared", "payout_pending", "disputed", "failed"], // FLUX A: qr boutique → funded → payout direct (pas de code); FLUX B: funded = FONDS SÉQUESTRÉS → livraison
   delivery_declared: ["delivery_confirmed", "disputed", "failed"],
   delivery_confirmed: ["payout_pending", "disputed", "failed"],
   payout_pending: ["payout_processing", "failed", "disputed"],
@@ -43,19 +43,27 @@ export const STATUS_LABELS: Record<OrderStatus, string> = {
   awaiting_payment: "En attente de paiement",
   payment_confirmed: "Paiement confirmé",
   conversion_pending: "Conversion en cours",
-  funded: "Financée",
+  funded: "Fonds séquestrés — argent bloqué", // Flux B: après paie séquestré
   delivery_declared: "Livraison déclarée",
   delivery_confirmed: "Réception confirmée",
   payout_pending: "Versement en attente",
   payout_processing: "Versement en cours",
-  payout_completed: "Versement terminé",
+  payout_completed: "Versement terminé — ✅ REÇUS / Vérifié = débloqué",
   failed: "Échouée",
   expired: "Expirée",
   disputed: "Litige",
 };
 
+// FLUX BOUT EN BOUT — SENTABAKH (validé graphes)
+// Règle: seul VENDEUR + ADMIN ont un compte. CLIENT et LIVREUR jamais de compte.
+// VENDEUR: Recevoir → Tape 10 000 FCFA → serveur convertit 10 000 FCFA = 15 651 sats (taux Bitnob verrouillé 2min) → Choix VENDEUR:
+// - QR CODE (boutique): Client scanne QR (Blink/Phoenix/Binance) → Paye 15 651 sats → 10 000 FCFA REÇUS (fin, pas de code)
+// - LIEN WhatsApp (livraison): Cliente ouvre LIEN sans compte → voit 25 000 FCFA = 39 128 sats (QR+Copier+Ouvrir wallet) → paie → FONDS SÉQUESTRÉS → Livreur arrive hors-plateforme → Cliente clique "J'ai bien reçu" → CODE 482917 (6ch, 2min, 3 essais, persisté) → Cliente dicte → Livreur appelle vendeur → Vendeur saisit code → Vérifié = argent débloqué (versement XOF)
+
 export const createOrderSchema = z.object({
-  amountSats: z.number().int().positive().max(100_000_000),
+  // VENDEUR tape en FCFA (ex: 10 000 FCFA → serveur convertit 15 651 sats, taux verrouillé 2min)
+  amountFcfa: z.number().int().positive().min(500).max(10_000_000).optional(),
+  amountSats: z.number().int().positive().max(100_000_000).optional(),
   description: z.string().min(3).max(500),
   sellerLabel: z.string().min(2).max(120),
   beneficiary: z.object({
@@ -63,7 +71,8 @@ export const createOrderSchema = z.object({
     phoneHint: z.string().max(30).optional(),
   }),
   demoMode: z.boolean().optional().default(false),
-});
+  flow: z.enum(["qr", "link", "delivery"]).optional().default("delivery"), // graphe: QR CODE (boutique) vs LIEN WhatsApp (livraison séquestrée)
+}).refine((d) => Boolean(d.amountSats || d.amountFcfa), { message: "amountFcfa ou amountSats requis", path: ["amountFcfa"] });
 export type CreateOrderInput = z.infer<typeof createOrderSchema>;
 
 export const deliveryProofSchema = z.object({

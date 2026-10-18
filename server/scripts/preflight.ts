@@ -8,11 +8,15 @@ async function main() {
   console.log(`Bitnob configured: ${config.hasBitnobCredentials()} (clientIdPresent=${Boolean(config.bitnob.clientId)})`);
 
   if (!config.hasBitnobCredentials()) {
-    console.log("\n[preflight] Aucun identifiant BITNOB_* detecte.");
+    console.log(`\n[preflight] ${config.bitnobCredentialHint()}`);
+    console.log(`  clientIdPresent=${Boolean(config.bitnob.clientId)} secretPresent=${Boolean(config.bitnob.clientSecret)} base=${config.bitnob.baseUrl}`);
     console.log("  -> Mode DEMO autorise : le parcours sera simule avec mention visible.");
-    console.log("  -> Pour tester en sandbox, renseigner BITNOB_CLIENT_ID / BITNOB_CLIENT_SECRET dans .env");
-    console.log("  -> Puis relancer: npm run preflight --workspace=server");
-    console.log("\n[preflight] OK (preparation hors ligne reussie).");
+    console.log("  -> Pour tester en sandbox REEL, renseigne les DEUX champs dans .env :");
+    console.log("       BITNOB_CLIENT_ID=<uuid copie dans app.bitnob.com > Settings > API Keys > Client ID>");
+    console.log("       BITNOB_CLIENT_SECRET=sandbox_...  (ta valeur sandbox_195ea... sans le prefixe prd:)");
+    console.log("     La valeur 'prd:sandbox_...' seule est le SECRET, pas l'ID — il manque l'UUID.");
+    console.log("  -> Puis relancer: npm.cmd run preflight --workspace=server");
+    console.log("\n[preflight] OK (preparation hors ligne reussie, DEMO actif).");
     return;
   }
 

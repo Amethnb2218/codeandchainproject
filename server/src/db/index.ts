@@ -24,6 +24,8 @@ export function getDb(): DatabaseSync {
   if (dir && dir !== "." && dir !== "./") fs.mkdirSync(dir, { recursive: true });
   db = new DatabaseSync(p);
   db.exec(SCHEMA_SQL);
+  // Migrations douces pour anciennes DB (ajout flow)
+  try { db.prepare("SELECT flow FROM orders LIMIT 0").all(); } catch { try { db.exec("ALTER TABLE orders ADD COLUMN flow TEXT NOT NULL DEFAULT 'delivery'"); } catch { /* ignore */ } }
   return db;
 }
 

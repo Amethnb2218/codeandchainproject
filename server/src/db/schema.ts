@@ -7,13 +7,29 @@ CREATE TABLE IF NOT EXISTS orders (
   id TEXT PRIMARY KEY,
   status TEXT NOT NULL,
   amount_sats INTEGER NOT NULL,
+  amount_fcfa INTEGER,
   description TEXT NOT NULL,
   seller_label TEXT NOT NULL,
   beneficiary_name TEXT NOT NULL,
   beneficiary_phone_hint TEXT,
+  type TEXT NOT NULL DEFAULT 'delivery',
+  -- FLUX (graphe valide): VENDEUR choisit QR (boutique, 10s, pas de code) ou LIEN WhatsApp (livraison, sequestre + CODE 6ch)
+  -- Seul VENDEUR+ADMIN ont un compte; CLIENT et LIVREUR jamais de compte
+  flow TEXT NOT NULL DEFAULT 'delivery' CHECK(flow IN ('qr','link','delivery')),
   demo_mode INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS quotes (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  amount_fcfa INTEGER NOT NULL,
+  amount_sats INTEGER NOT NULL,
+  btc_price_xof TEXT NOT NULL,
+  source TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  created_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS lightning_invoices (
@@ -90,6 +106,20 @@ CREATE TABLE IF NOT EXISTS delivery_proofs (
   created_at TEXT NOT NULL
 );
 
+-- Code de remise hors-ligne : le client confirme la réception → reçoit un code à 6 chiffres à dicter au livreur → le livreur le dicte au vendeur → le vendeur le saisit pour libérer le versement. Aucune app livreur requise.
+CREATE TABLE IF NOT EXISTS delivery_codes (
+  id TEXT PRIMARY KEY,
+  order_id TEXT NOT NULL REFERENCES orders(id) ON DELETE CASCADE,
+  code_hash TEXT NOT NULL,
+  code_hint TEXT NOT NULL,
+  code_plain TEXT,
+  status TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  verified_at TEXT,
+  created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS webhook_events (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
@@ -115,4 +145,5 @@ CREATE INDEX IF NOT EXISTS idx_orders_status ON orders(status);
 CREATE INDEX IF NOT EXISTS idx_invoices_order ON lightning_invoices(order_id);
 CREATE INDEX IF NOT EXISTS idx_payouts_order ON payouts(order_id);
 CREATE INDEX IF NOT EXISTS idx_proofs_order ON delivery_proofs(order_id);
+CREATE INDEX IF NOT EXISTS idx_delivery_codes_order ON delivery_codes(order_id);
 `;
