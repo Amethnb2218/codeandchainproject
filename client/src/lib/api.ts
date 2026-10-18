@@ -1,4 +1,7 @@
-const BASE = import.meta.env.VITE_API_URL ?? "http://localhost:4000";
+const RAW = (import.meta.env.VITE_API_URL as string | undefined)?.trim() ?? "";
+// En prod sur Render le front est servi par le même Express → BASE vide = requêtes relatives /api/* (évite ERR_CONNECTION_REFUSED localhost:4000)
+// En dev Vite, /api est proxifié vers http://localhost:4000 (vite.config.ts)
+const BASE = RAW === "" || RAW === "http://localhost:4000" ? "" : RAW.replace(/\/$/, "");
 export async function api<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${BASE}${path}`, {
     headers: { "Content-Type": "application/json", ...(init?.headers ?? {}) },
