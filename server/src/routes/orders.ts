@@ -123,9 +123,8 @@ router.post("/:id/invoice", async (req, res) => {
   const now = nowIso();
   const expiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString();
 
-  // DEMO si commande créée en démo OU si pas de credentials — évite 502 inutile ("Bitnob indisponible") côté client même quand Render a des clés
-  const isDemoOrder = (order.demo_mode as number) === 1;
-  if (isDemoOrder || !config.hasBitnobCredentials()) {
+  // DEMO seulement si pas de credentials — en sandbox (Render avec clés) on tente Bitnob réel, 502 explicite si indisponible
+  if (!config.hasBitnobCredentials()) {
     const fakeBolt11 = `lnbc${amountSats}n1demo_${reference.slice(0, 8)}_SENTABAKH_DEMO_NO_FUNDS`;
     db.prepare(
       "INSERT INTO lightning_invoices (id,order_id,bolt11,amount_sats,status,reference,expires_at,raw_json,created_at) VALUES (?,?,?,?,?,?,?,?,?)"

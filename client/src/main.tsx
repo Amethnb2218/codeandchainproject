@@ -262,17 +262,17 @@ function NewOrder(){
     if(amountFcfa>10_000_000){ setErr("Maximum 10 000 000 FCFA"); return; }
     setErr(null); setLoading(true);
     try{
-      // Toujours flow link (supporte QR physique + lien distance), séquestre + CODE géré côté détail si livraison
+      // Sandbox réel par défaut (Bitnob) — plus de demoMode hardcodé
       const j = await api<{id:string}>(`/api/orders`, { method:"POST", body: JSON.stringify({
         amountFcfa: Number(amountFcfa),
         description: "Paiement",
         sellerLabel: "Vendeur",
         beneficiaryName: "Vendeur",
-        demoMode: true,
+        demoMode: false,
         flow: "link",
       })});
       let inv: {bolt11:string} | undefined;
-      try{ const r = await api<{demo?:boolean; invoice:{bolt11:string}}>(`/api/orders/${j.id}/invoice`, {method:"POST"}); inv = r.invoice; }catch(ex){ setErr(`Commande créée (${j.id}) mais facture: ${(ex as Error).message}`); }
+      try{ const r = await api<{demo?:boolean; invoice:{bolt11:string}}>(`/api/orders/${j.id}/invoice`, {method:"POST"}); inv = r.invoice; }catch(ex){ setErr(`Commande créée (${j.id}) mais facture Bitnob: ${(ex as Error).message} — vérifie /health → Bitnob Configuré`); }
       const payUrl = `${origin}/orders/${j.id}`;
       setResult({id: j.id, amountFcfa: Number(amountFcfa), payUrl, invoice: inv});
       if(inv?.bolt11) setCopied(null);
@@ -741,13 +741,13 @@ function PayPage(){
     if(amount>10_000_000){ setErr("Maximum 10 000 000 FCFA"); return; }
     setErr(null); setLoading(true);
     try{
-      const j = await api<{id:string}>(`/api/orders`, {method:"POST", body: JSON.stringify({amountFcfa: Number(amount), description: `Paiement ${nice}`, sellerLabel: nice, beneficiaryName: nice, demoMode:true, flow:"qr"})});
+      const j = await api<{id:string}>(`/api/orders`, {method:"POST", body: JSON.stringify({amountFcfa: Number(amount), description: `Paiement ${nice}`, sellerLabel: nice, beneficiaryName: nice, demoMode:false, flow:"qr"})});
       const r = await api<{invoice:{bolt11:string}}>(`/api/orders/${j.id}/invoice`, {method:"POST"});
       setOrderId(j.id); setInvoice(r.invoice); setPhase("invoice");
-    }catch(ex){ setErr((ex as Error).message); } finally{ setLoading(false); }
+    }catch(ex){ setErr((ex as Error).message + " — /health doit afficher Bitnob Configuré"); } finally{ setLoading(false); }
   };
 
-  // Poll: si payé → phase paid (DEMO: on peut simuler via bouton)
+  // Poll: si payé → phase paid
   React.useEffect(()=>{
     if(phase!=="invoice" || !orderId) return;
     const t = setInterval(async()=>{
